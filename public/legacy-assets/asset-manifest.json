@@ -1,0 +1,35 @@
+{
+  "sourceFile": "admin.html",
+  "assets": [
+    {
+      "type": "logo",
+      "source": "embedded data URL in admin.html",
+      "location": "LOGO_SRC",
+      "note": "Stored as image/png base64 in JavaScript; no stand-alone file was present in the repo."
+    },
+    {
+      "type": "image",
+      "source": "embedded data URL in admin.html",
+      "location": "CHAT_IMG_SRC",
+      "note": "Stored as image/jpeg base64 in JavaScript; no stand-alone file was present in the repo."
+    },
+    {
+      "type": "font",
+      "source": "Google Fonts CSS import",
+      "location": "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap",
+      "note": "Remote asset; not a local file in the project."
+    },
+    {
+      "type": "icons",
+      "source": "inline SVG strings in JavaScript",
+      "location": "ICONS object in admin.html",
+      "note": "These are runtime-generated SVGs, not separate asset files."
+    },
+    {
+      "type": "image",
+      "source": "data URI embedded in HTML markup",
+      "location": "brand img tags",
+      "note": "The logo is embedded directly in the HTML as a base64 image source."
+    }
+  ]
+}
