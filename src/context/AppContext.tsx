@@ -95,6 +95,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "SET_SIDEBAR_OPEN", open: false });
     if (view === "dashboard") router.push("/");
     if (view === "crm") router.push("/admin/crm-leads");
+    if (view === "customers") router.push("/admin/customers");
+    if (view === "shipments") router.push("/admin/shipments");
     window.scrollTo(0, 0);
   };
 

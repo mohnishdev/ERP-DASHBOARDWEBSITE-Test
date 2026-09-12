@@ -159,7 +159,7 @@ export function Finance() {
           <div className="modal-head"><h3>New invoice</h3><button className="x-btn" onClick={closeModal}>×</button></div>
           <div className="modal-body">
             <div className="field"><label>Tracking number (optional — auto-fills the rest)</label><input placeholder="e.g. JAAD/2807/2026/00231" value={tracking} onChange={(event) => setTracking(event.target.value)} onBlur={autofillFromTracking} /></div>
-            <div className="grid g-2"><div className="field"><label>Customer</label><select value={customer} onChange={(event) => setCustomer(event.target.value)}><option value="">Choose a customer</option>{dashboardDB.customers.map((name) => <option key={name}>{name}</option>)}</select></div><div className="field"><label>Amount (₦, VAT-inclusive)</label><input type="number" placeholder="0" value={amount} onChange={(event) => setAmount(event.target.value)} /></div></div>
+            <div className="grid g-2"><div className="field"><label>Customer</label><select value={customer} onChange={(event) => setCustomer(event.target.value)}><option value="">Choose a customer</option>{dashboardDB.customers.map((item) => <option key={item.name}>{item.name}</option>)}</select></div><div className="field"><label>Amount (₦, VAT-inclusive)</label><input type="number" placeholder="0" value={amount} onChange={(event) => setAmount(event.target.value)} /></div></div>
             <div className="field"><label>Description</label><input placeholder="e.g. Air freight, Lagos to Ikoyi" value={description} onChange={(event) => setDescription(event.target.value)} /></div>
             <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 2 }}>{hint}</div>
           </div>

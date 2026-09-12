@@ -48,6 +48,17 @@ export type Lead = {
   value: number;
   notesLog: { t: string; by: string; text: string }[];
 };
+
+export type Customer = {
+  name: string;
+  type: string;
+  contact: string;
+  credit: number;
+  balance: number;
+  since: string;
+  status: string;
+  assignedTo?: string;
+};
 type Expense = { amount: number; cat: string };
 type Ticket = { status: string };
 type Announcement = { id: string; title: string; body: string };
@@ -66,11 +77,11 @@ export const dashboardDB = {
     { id: "s8", tracking: "JAAD/2607/2026/00229", customer: "Ubuntu Foods Ltd", origin: "Lagos", destination: "Aba", type: "Road", status: "Cancelled", pickup: "2026-07-26", weight: "1.1t", value: 260000, notes: "Customer cancelled before pickup, no charge." },
   ] as Booking[],
   customers: [
-    "EricBoss Furnitures",
-    "Arbico PLC",
-    "Doyetek Industries",
-    "Sahara Textiles",
-  ],
+    { name: "EricBoss Furnitures", type: "B2B", contact: "John, 0810 612 8219", credit: 3000000, balance: 0, since: "2024", status: "Active" },
+    { name: "Arbico PLC", type: "B2B", contact: "Franco, Ikoyi Lagos", credit: 8000000, balance: 1200000, since: "2022", status: "Active" },
+    { name: "Doyetek Industries", type: "B2B", contact: "Ops desk, Lagos", credit: 6000000, balance: 0, since: "2023", status: "Active" },
+    { name: "Sahara Textiles", type: "B2B", contact: "Aisha Mohammed", credit: 1500000, balance: 0, since: "2026", status: "On hold" },
+  ] as Customer[],
   fleet: [
     { plate: "ABJ-220-KT", status: "Available" },
     { plate: "KJA-441-XL", status: "Maintenance" },
