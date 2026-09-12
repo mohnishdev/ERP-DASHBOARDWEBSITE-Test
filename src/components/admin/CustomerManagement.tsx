@@ -51,6 +51,7 @@ export function CustomerManagement() {
       showToast("Choose a staff member first");
       return;
     }
+    // eslint-disable-next-line react-hooks/immutability -- selectedCustomer is a shared reference into dashboardDB.customers
     selectedCustomer.assignedTo = select.value;
     refreshCustomers();
     showToast(`${selectedCustomer.name} assigned to ${select.value}`);

@@ -29,6 +29,7 @@ function Donut({ segments, size = 172 }: { segments: { value: number; color: str
   return <svg viewBox={`0 0 ${size} ${size}`} style={{ width: size, height: size, flexShrink: 0 }}>{segments.map((segment, index) => {
     const dash = segment.value / total * circumference;
     const circle = <circle key={index} cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={segment.color} strokeWidth={size * 0.136} strokeDasharray={`${dash} ${circumference - dash}`} strokeDashoffset={-offset} transform={`rotate(-90 ${size / 2} ${size / 2})`} />;
+    // eslint-disable-next-line react-hooks/immutability -- running offset accumulator, local to this render
     offset += dash;
     return circle;
   })}</svg>;
