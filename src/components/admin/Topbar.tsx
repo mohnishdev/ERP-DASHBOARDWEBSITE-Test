@@ -1,13 +1,21 @@
+"use client";
+
+import { useAppDispatch, useAppState } from "@/context/AppContext";
+import { viewLabels } from "@/context/AppContext";
+
 export function Topbar() {
+  const { currentView, sidebarOpen } = useAppState();
+  const dispatch = useAppDispatch();
+
   return (
     <header id="topbar">
       <div className="topbar-left">
-        <button id="menu-toggle" type="button" aria-label="Toggle menu">
+        <button id="menu-toggle" type="button" aria-label="Toggle menu" onClick={() => dispatch({ type: "SET_SIDEBAR_OPEN", open: !sidebarOpen })}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M4 7h16M4 12h16M4 17h16" />
           </svg>
         </button>
-        <div className="crumb">Dashboard</div>
+        <div className="crumb">{viewLabels[currentView] || currentView}</div>
       </div>
 
       <div className="topbar-right">

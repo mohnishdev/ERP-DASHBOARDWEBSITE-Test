@@ -1,6 +1,10 @@
+"use client";
+
 import type { ReactNode } from "react";
+import { useAppState, useNavigate } from "@/context/AppContext";
 
 type NavItem = {
+  key: string;
   label: string;
   icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "calc" | "people" | "headset" | "chart" | "shield";
   active?: boolean;
@@ -14,42 +18,42 @@ type NavGroup = {
 const navGroups: NavGroup[] = [
   {
     label: "Overview",
-    items: [{ label: "Dashboard", icon: "grid", active: true }],
+    items: [{ key: "dashboard", label: "Dashboard", icon: "grid" }],
   },
   {
     label: "Revenue & Clients",
     items: [
-      { label: "CRM & Leads", icon: "funnel" },
-      { label: "Customer Management", icon: "idcard" },
+      { key: "crm", label: "CRM & Leads", icon: "funnel" },
+      { key: "customers", label: "Customer Management", icon: "idcard" },
     ],
   },
   {
     label: "Operations",
     items: [
-      { label: "Shipment Operations", icon: "box" },
-      { label: "Fleet", icon: "truck" },
-      { label: "Driver Management", icon: "wheel" },
-      { label: "Warehouse", icon: "shelf" },
+      { key: "shipments", label: "Shipment Operations", icon: "box" },
+      { key: "fleet", label: "Fleet", icon: "truck" },
+      { key: "drivers", label: "Driver Management", icon: "wheel" },
+      { key: "warehouse", label: "Warehouse", icon: "shelf" },
     ],
   },
   {
     label: "Finance & People",
     items: [
-      { label: "Finance", icon: "bank" },
-      { label: "Calculator", icon: "calc" },
-      { label: "HR & Careers", icon: "people" },
+      { key: "finance", label: "Finance", icon: "bank" },
+      { key: "calculator", label: "Calculator", icon: "calc" },
+      { key: "hr", label: "HR & Careers", icon: "people" },
     ],
   },
   {
     label: "Service & Insight",
     items: [
-      { label: "Support", icon: "headset" },
-      { label: "Reports", icon: "chart" },
+      { key: "support", label: "Support", icon: "headset" },
+      { key: "reports", label: "Reports", icon: "chart" },
     ],
   },
   {
     label: "System",
-    items: [{ label: "Administration", icon: "shield" }],
+    items: [{ key: "admin", label: "Administration", icon: "shield" }],
   },
 ];
 
@@ -148,8 +152,11 @@ function iconMarkup(icon: NavItem["icon"]) {
 }
 
 export function Sidebar() {
+  const { currentView, sidebarOpen } = useAppState();
+  const navigate = useNavigate();
+
   return (
-    <aside id="sidebar">
+    <aside id="sidebar" className={sidebarOpen ? "open" : undefined}>
       <div className="brand">
         <img src="/legacy-assets/embedded_asset_1.png" alt="JAAD Logistics" />
         <div>
@@ -166,7 +173,11 @@ export function Sidebar() {
               <a
                 key={item.label}
                 href="#"
-                className={`nav-item${item.active ? " active" : ""}`}
+                className={`nav-item${currentView === item.key ? " active" : ""}`}
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigate(item.key);
+                }}
               >
                 {iconMarkup(item.icon)}
                 <span>{item.label}</span>
