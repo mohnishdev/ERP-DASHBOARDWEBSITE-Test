@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useReducer, type Dispatch, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { DB } from "@/data/db";
 
@@ -12,6 +12,8 @@ type CurrentUser = {
   type?: "admin" | "customer";
 } | null;
 
+export const authStorageKey = "jaad_mock_auth";
+
 type AppState = {
   currentView: string;
   currentTab: Record<string, string>;
@@ -20,6 +22,7 @@ type AppState = {
   previewRole: string | null;
   DB: typeof DB;
   currentUser: CurrentUser;
+  authReady: boolean;
   sidebarOpen: boolean;
 };
 
@@ -30,6 +33,7 @@ type AppAction =
   | { type: "SET_SOUND"; soundOn: boolean }
   | { type: "SET_PREVIEW_ROLE"; role: string | null }
   | { type: "SET_CURRENT_USER"; user: CurrentUser }
+  | { type: "SET_AUTH_READY"; ready: boolean }
   | { type: "SET_DB"; DB: typeof DB }
   | { type: "SET_SIDEBAR_OPEN"; open: boolean };
 
@@ -45,6 +49,10 @@ export const viewLabels: Record<string, string> = {
   calculator: "Calculator",
   hr: "HR & Careers",
   support: "Support",
+  email: "Email",
+  sms: "SMS",
+  call: "Call",
+  whatsapp: "WhatsApp",
   reports: "Reports",
   admin: "Administration",
 };
@@ -57,6 +65,7 @@ const initialState: AppState = {
   previewRole: null,
   DB,
   currentUser: null,
+  authReady: false,
   sidebarOpen: false,
 };
 
@@ -74,6 +83,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, previewRole: action.role };
     case "SET_CURRENT_USER":
       return { ...state, currentUser: action.user };
+    case "SET_AUTH_READY":
+      return { ...state, authReady: action.ready };
     case "SET_DB":
       return { ...state, DB: action.DB };
     case "SET_SIDEBAR_OPEN":
@@ -90,13 +101,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const router = useRouter();
 
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(authStorageKey);
+      if (saved) dispatch({ type: "SET_CURRENT_USER", user: JSON.parse(saved) });
+    } catch { /* A missing or invalid mock session is treated as logged out. */ }
+    dispatch({ type: "SET_AUTH_READY", ready: true });
+  }, []);
+
   const navigate = (view: string) => {
     dispatch({ type: "SET_CURRENT_VIEW", view });
     dispatch({ type: "SET_SIDEBAR_OPEN", open: false });
-    if (view === "dashboard") router.push("/");
+    if (view === "dashboard") router.push("/admin/dashboard");
     if (view === "crm") router.push("/admin/crm-leads");
     if (view === "customers") router.push("/admin/customers");
     if (view === "shipments") router.push("/admin/shipments");
+    if (view === "fleet") router.push("/admin/fleet");
+    if (view === "drivers") router.push("/admin/drivers");
+    if (view === "warehouse") router.push("/admin/warehouse");
+    if (view === "finance") router.push("/admin/finance");
+    if (view === "calculator") router.push("/admin/calculator");
+    if (view === "hr") router.push("/admin/hr");
+    if (view === "support" || view === "email" || view === "sms" || view === "call" || view === "whatsapp") router.push("/admin/support");
     window.scrollTo(0, 0);
   };
 

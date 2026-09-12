@@ -1,11 +1,18 @@
 "use client";
 
-import { useAppDispatch, useAppState } from "@/context/AppContext";
+import { authStorageKey, useAppDispatch, useAppState, useNavigate } from "@/context/AppContext";
 import { viewLabels } from "@/context/AppContext";
 
 export function Topbar() {
   const { currentView, sidebarOpen } = useAppState();
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
+
+  const logout = () => {
+    sessionStorage.removeItem(authStorageKey);
+    dispatch({ type: "SET_CURRENT_USER", user: null });
+    navigate("dashboard");
+  };
 
   return (
     <header id="topbar">
@@ -43,7 +50,7 @@ export function Topbar() {
 
         <div className="avatar" title="My profile" aria-label="My profile">AJ</div>
 
-        <button className="icon-btn" type="button" aria-label="Log out" title="Log out">
+        <button className="icon-btn" type="button" aria-label="Log out" title="Log out" onClick={logout}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
             <path d="M16 17l5-5-5-5" />

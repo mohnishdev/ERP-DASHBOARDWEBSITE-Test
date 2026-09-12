@@ -1,12 +1,12 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useAppState, useNavigate } from "@/context/AppContext";
+import { useState, type ReactNode } from "react";
+import { useAppDispatch, useAppState, useNavigate } from "@/context/AppContext";
 
 type NavItem = {
   key: string;
   label: string;
-  icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "calc" | "people" | "headset" | "chart" | "shield";
+  icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "calc" | "people" | "headset" | "chart" | "shield" | "message" | "mail" | "phone" | "whatsapp";
   active?: boolean;
 };
 
@@ -118,6 +118,18 @@ function iconMarkup(icon: NavItem["icon"]) {
         <path d="M8 8h8M8 12h2M12 12h2M8 16h2M12 16h2" />
       </svg>
     ),
+    message: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5z" /><path d="M8 9h8M8 12h5" /></svg>
+    ),
+    mail: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></svg>
+    ),
+    phone: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 4h3l1.5 4-2 1.5a14 14 0 0 0 5 5l1.5-2 4 1.5v3a2 2 0 0 1-2 2C11.4 19.3 4.7 12.6 5 6a2 2 0 0 1 2-2z" /></svg>
+    ),
+    whatsapp: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 19l1.2-3A8 8 0 1 1 8 18.2L5 19z" /><path d="M9 9.5c.6 2 2 3.4 4 4M9 9.5l1-1M13 13.5l1.2-1" /></svg>
+    ),
     people: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1" />
@@ -152,8 +164,11 @@ function iconMarkup(icon: NavItem["icon"]) {
 }
 
 export function Sidebar() {
-  const { currentView, sidebarOpen } = useAppState();
+  const { currentView, currentTab, sidebarOpen, DB } = useAppState();
+  const dispatch = useAppDispatch();
   const navigate = useNavigate();
+  const [supportMenuOpen, setSupportMenuOpen] = useState(false);
+  const needsAttention = DB.chats.filter((chat) => chat.status === "Open" || chat.status === "Pending").length;
 
   return (
     <aside id="sidebar" className={sidebarOpen ? "open" : undefined}>
@@ -170,6 +185,14 @@ export function Sidebar() {
           <div key={group.label}>
             <div className="nav-group-label">{group.label}</div>
             {group.items.map((item) => (
+              item.key === "support" ? <div key={item.label}>
+                <a href="#" className={`nav-item${currentView === "support" || ["email", "sms", "call", "whatsapp"].includes(currentView) ? " active" : ""}`} onClick={(event) => { event.preventDefault(); setSupportMenuOpen((open) => !open); }}>
+                  {iconMarkup(item.icon)}<span>{item.label}</span>{needsAttention > 0 && <span className="nav-badge">{needsAttention}</span>}<span className="support-chevron">{supportMenuOpen ? "▾" : "▸"}</span>
+                </a>
+                {supportMenuOpen && <div className="nav-sublist">
+                  {[['chat', 'Live Chat', 'message'], ['email', 'Email', 'mail'], ['sms', 'SMS', 'message'], ['call', 'Call', 'phone'], ['whatsapp', 'WhatsApp', 'whatsapp']].map(([key, label, icon]) => <a href="#" className={`nav-subitem${(key === "chat" ? currentView === "support" && currentTab.support === "chat" : currentView === key) ? " active" : ""}`} key={key} onClick={(event) => { event.preventDefault(); dispatch({ type: "SET_CURRENT_TAB", view: "support", tab: key }); navigate(key); }}><span>{iconMarkup(icon as NavItem["icon"])}</span><span>{label}</span></a>)}
+                </div>}
+              </div> : (
               <a
                 key={item.label}
                 href="#"
@@ -182,6 +205,7 @@ export function Sidebar() {
                 {iconMarkup(item.icon)}
                 <span>{item.label}</span>
               </a>
+              )
             ))}
           </div>
         ))}
