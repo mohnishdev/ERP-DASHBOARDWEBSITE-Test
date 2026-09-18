@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useReducer, type Dispatch, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { DB } from "@/data/db";
 
 type CurrentUser = {
@@ -46,7 +46,6 @@ export const viewLabels: Record<string, string> = {
   drivers: "Driver Management",
   warehouse: "Warehouse",
   finance: "Finance",
-  calculator: "Calculator",
   hr: "HR & Careers",
   support: "Support",
   email: "Email",
@@ -100,6 +99,7 @@ const AppDispatchContext = createContext<Dispatch<AppAction> | undefined>(undefi
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     try {
@@ -120,9 +120,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (view === "drivers") router.push("/admin/drivers");
     if (view === "warehouse") router.push("/admin/warehouse");
     if (view === "finance") router.push("/admin/finance");
-    if (view === "calculator") router.push("/admin/calculator");
     if (view === "hr") router.push("/admin/hr");
-    if (view === "support" || view === "email" || view === "sms" || view === "call" || view === "whatsapp") router.push("/admin/support");
+    if (view === "admin") router.push("/admin/admin");
+    if (view === "support" || view === "chat" || view === "email" || view === "sms" || view === "call" || view === "whatsapp") {
+      if (pathname !== "/admin/support") router.push("/admin/support");
+    }
     window.scrollTo(0, 0);
   };
 

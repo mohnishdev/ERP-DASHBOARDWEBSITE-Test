@@ -6,7 +6,7 @@ import { useAppDispatch, useAppState, useNavigate } from "@/context/AppContext";
 type NavItem = {
   key: string;
   label: string;
-  icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "calc" | "people" | "headset" | "chart" | "shield" | "message" | "mail" | "phone" | "whatsapp";
+  icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "people" | "headset" | "chart" | "shield" | "message" | "mail" | "phone" | "whatsapp";
   active?: boolean;
 };
 
@@ -40,7 +40,6 @@ const navGroups: NavGroup[] = [
     label: "Finance & People",
     items: [
       { key: "finance", label: "Finance", icon: "bank" },
-      { key: "calculator", label: "Calculator", icon: "calc" },
       { key: "hr", label: "HR & Careers", icon: "people" },
     ],
   },
@@ -110,12 +109,6 @@ function iconMarkup(icon: NavItem["icon"]) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M3 10l9-6 9 6" />
         <path d="M5 10v8h14v-8M8 18v-5h2v5M14 18v-5h2v5" />
-      </svg>
-    ),
-    calc: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="4" y="3" width="16" height="18" rx="2" />
-        <path d="M8 8h8M8 12h2M12 12h2M8 16h2M12 16h2" />
       </svg>
     ),
     message: (
@@ -190,7 +183,7 @@ export function Sidebar() {
                   {iconMarkup(item.icon)}<span>{item.label}</span>{needsAttention > 0 && <span className="nav-badge">{needsAttention}</span>}<span className="support-chevron">{supportMenuOpen ? "▾" : "▸"}</span>
                 </a>
                 {supportMenuOpen && <div className="nav-sublist">
-                  {[['chat', 'Live Chat', 'message'], ['email', 'Email', 'mail'], ['sms', 'SMS', 'message'], ['call', 'Call', 'phone'], ['whatsapp', 'WhatsApp', 'whatsapp']].map(([key, label, icon]) => <a href="#" className={`nav-subitem${(key === "chat" ? currentView === "support" && currentTab.support === "chat" : currentView === key) ? " active" : ""}`} key={key} onClick={(event) => { event.preventDefault(); dispatch({ type: "SET_CURRENT_TAB", view: "support", tab: key }); navigate(key); }}><span>{iconMarkup(icon as NavItem["icon"])}</span><span>{label}</span></a>)}
+                  {[['chat', 'Live Chat', 'message'], ['email', 'Email', 'mail'], ['sms', 'SMS', 'message'], ['call', 'Call', 'phone'], ['whatsapp', 'WhatsApp', 'whatsapp']].map(([key, label, icon]) => <a href="#" className={`nav-subitem${(key === "chat" ? currentView === "support" && currentTab.support === "chat" : currentView === key) ? " active" : ""}`} key={key} onClick={(event) => { event.preventDefault(); dispatch({ type: "SET_CURRENT_TAB", view: "support", tab: key }); navigate(key === "chat" ? "support" : key); }}><span>{iconMarkup(icon as NavItem["icon"])}</span><span>{label}</span></a>)}
                 </div>}
               </div> : (
               <a

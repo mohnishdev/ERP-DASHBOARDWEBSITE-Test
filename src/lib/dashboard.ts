@@ -166,11 +166,53 @@ export type Customer = {
   status: string;
   assignedTo?: string;
 };
-type Announcement = { id: string; title: string; body: string };
+export const jobPostingsStorageKey = "jaad_job_postings";
+export type AdminUser = { name: string; email: string; role: string; status: string };
+export type AdminRole = { role: string; desc: string; users: number; perms: string[] };
+export type AuditEntry = { who: string; action: string; time: string };
+export type Integration = { name: string; status: string };
+export type Announcement = { id: string; title: string; body: string; date?: string };
 
 export const dashboardDB = {
   dismissedAlerts: [] as string[],
   announcements: [] as Announcement[],
+  users: [
+    { name: "Oluwaseun John", email: "oluwaseun@jaadlogistics.com", role: "Super Admin", status: "Active" },
+    { name: "Abidoye Joseph Damilare", email: "admin@jaadlogistics.com", role: "Super Admin", status: "Active" },
+    { name: "Kelechi Uche", email: "kelechi@jaadlogistics.com", role: "Operations Manager", status: "Active" },
+    { name: "Fatima Sani", email: "fatima@jaadlogistics.com", role: "Customer Service", status: "Active" },
+    { name: "Musa Bello", email: "musa@jaadlogistics.com", role: "Driver", status: "Suspended" },
+  ] as AdminUser[],
+  roles: [
+    { role: "Super Admin", desc: "Full access to every module, including system settings and RBAC itself.", users: 1, perms: ["dashboard", "crm", "customers", "shipments", "fleet", "drivers", "warehouse", "finance", "hr", "support", "reports", "admin"] },
+    { role: "Operations Manager", desc: "Runs day-to-day logistics: bookings, dispatch, fleet, drivers and warehouse.", users: 3, perms: ["dashboard", "shipments", "fleet", "drivers", "warehouse"] },
+    { role: "Finance Officer", desc: "Handles invoicing, expenses, payroll and financial reporting.", users: 2, perms: ["dashboard", "finance", "reports"] },
+    { role: "Customer Service", desc: "Manages leads, customer accounts and support tickets.", users: 4, perms: ["dashboard", "crm", "customers", "support"] },
+    { role: "Driver", desc: "Sees only the shipments assigned to them.", users: 12, perms: ["shipments"] },
+    { role: "Sales & Lead Manager", desc: "Owns the pipeline: capturing, qualifying and converting leads into customer accounts.", users: 2, perms: ["dashboard", "crm", "customers"] },
+    { role: "CRM Specialist", desc: "Works leads day to day, logs notes and follow-ups. No access to finance or admin.", users: 3, perms: ["dashboard", "crm"] },
+    { role: "Fleet Manager", desc: "Manages vehicles, driver assignment and maintenance schedules.", users: 2, perms: ["dashboard", "fleet", "drivers"] },
+    { role: "Warehouse Manager", desc: "Manages inventory and stock levels.", users: 2, perms: ["dashboard", "warehouse"] },
+    { role: "HR Manager", desc: "Handles employees, recruitment and leave requests.", users: 1, perms: ["dashboard", "hr"] },
+    { role: "Support Agent", desc: "Handles tickets and live chat only.", users: 5, perms: ["dashboard", "support"] },
+  ] as AdminRole[],
+  auditLog: [
+    { who: "Abidoye Joseph Damilare", action: "Created booking JAAD/0208/2026/00238", time: "2026-08-02 09:14" },
+    { who: "Oluwaseun John", action: "Approved leave request for Tunde Fashola", time: "2026-08-01 16:40" },
+    { who: "System", action: "Marked INV-00407 overdue", time: "2026-08-01 00:05" },
+    { who: "Abidoye Joseph Damilare", action: "Generated manifest MNF/JAAD/3007/2026/005", time: "2026-07-30 08:05" },
+  ] as AuditEntry[],
+  integrations: [
+    { name: "Supabase (Postgres, Auth, Realtime, Storage)", status: "Connected" },
+    { name: "Google Maps", status: "Not connected" },
+    { name: "Twilio", status: "Not connected" },
+    { name: "WhatsApp Business API", status: "Not connected" },
+    { name: "Paystack", status: "Not connected" },
+    { name: "Flutterwave", status: "Not connected" },
+    { name: "Stripe", status: "Not connected" },
+    { name: "Postmark / Resend", status: "Connected" },
+    { name: "Cloudflare Turnstile", status: "Connected" },
+  ] as Integration[],
   bookings: [
     { id: "s1", tracking: "JAAD/2807/2026/00231", customer: "EricBoss Furnitures", origin: "Lagos", destination: "Ikoyi, Lagos", type: "Air", status: "Delivered", pickup: "2026-07-28", weight: "840kg", value: 2100000, notes: "Signed by FRANCO on arrival." },
     { id: "s2", tracking: "JAAD/2907/2026/00232", customer: "Arbico PLC", origin: "Lagos", destination: "Port Harcourt", type: "Haulage", status: "Delivered", pickup: "2026-07-29", weight: "12t", value: 4600000, notes: "" },

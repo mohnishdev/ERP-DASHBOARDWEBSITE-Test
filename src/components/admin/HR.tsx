@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { jsPDF } from "jspdf";
 import { AdminTable } from "./AdminTable";
 import { useAppDispatch } from "@/context/AppContext";
-import { dashboardDB, type Applicant, type Employee, type JobPosting, type LeaveRequest } from "@/lib/dashboard";
+import { dashboardDB, jobPostingsStorageKey, type Applicant, type Employee, type JobPosting, type LeaveRequest } from "@/lib/dashboard";
 
 const hrTabs = [
   ["employees", "Employees"],
@@ -76,6 +76,13 @@ export function HR() {
 
   useEffect(() => {
     dispatch({ type: "SET_CURRENT_VIEW", view: "hr" });
+    try {
+      const saved = JSON.parse(localStorage.getItem(jobPostingsStorageKey) || "null") as JobPosting[] | null;
+      if (saved) {
+        dashboardDB.jobPostings.splice(0, dashboardDB.jobPostings.length, ...saved);
+        queueMicrotask(() => setJobPostings(saved));
+      }
+    } catch { /* Keep the in-memory postings when stored data is invalid. */ }
   }, [dispatch]);
 
   const showToast = (message: string) => {
@@ -110,14 +117,19 @@ export function HR() {
     const title = postingForm.title.trim();
     const location = postingForm.location.trim();
     if (!title || !location) { showToast("Add a title and location"); return; }
-    setJobPostings((currentPostings) => [{ title, location, type: postingForm.type, desc: postingForm.desc.trim() }, ...currentPostings]);
+    const posting = { title, location, type: postingForm.type, desc: postingForm.desc.trim() };
+    dashboardDB.jobPostings.unshift(posting);
+    localStorage.setItem(jobPostingsStorageKey, JSON.stringify(dashboardDB.jobPostings));
+    setJobPostings([...dashboardDB.jobPostings]);
     closeModal();
     setActiveTab("postings");
     showToast("Role posted, now live on the website");
   };
 
   const removePosting = (index: number) => {
-    setJobPostings((currentPostings) => currentPostings.filter((_, currentIndex) => currentIndex !== index));
+    dashboardDB.jobPostings.splice(index, 1);
+    localStorage.setItem(jobPostingsStorageKey, JSON.stringify(dashboardDB.jobPostings));
+    setJobPostings([...dashboardDB.jobPostings]);
     showToast("Posting removed");
   };
 
