@@ -35,7 +35,6 @@ h1,h2,h3,h4{font-family:var(--disp); letter-spacing:-0.01em; line-height:1.08;}
   font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
   color:var(--red); display:flex; align-items:center; gap:8px; margin-bottom:14px;
 }
-.eyebrow::before{content:""; width:22px; height:1px; background:var(--red); display:inline-block;}
 
 /* route-line signature element */
 .routeline{
@@ -787,8 +786,11 @@ tbody tr:hover{background:var(--surface-2);}
   /* TABLE */
   .table-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); position:relative;}
   table{width:100%; border-collapse:collapse; font-size:12.8px; min-width:640px;}
-  thead th{text-align:left; font-size:10.2px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-faint); font-weight:600; padding:10px 14px; background:var(--surface2); border-bottom:1px solid var(--border); white-space:nowrap;}
-  tbody td{padding:11px 14px; border-bottom:1px solid var(--border); vertical-align:middle;}
+  .admin-table{table-layout:fixed; border-collapse:separate; border-spacing:0;}
+  .admin-table thead th{box-sizing:border-box; text-align:left; font-size:10.2px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-faint); font-weight:600; padding:10px 14px; background:var(--surface2); border-bottom:1px solid var(--border); white-space:nowrap;}
+  .admin-table tbody td{box-sizing:border-box; text-align:left; padding:11px 14px; border-bottom:1px solid var(--border); vertical-align:middle;}
+  .admin-table th:not(:first-child), .admin-table td:not(:first-child){border-left:20px solid transparent; background-clip:padding-box;}
+  .admin-table th:last-child, .admin-table td:last-child{text-align:center; padding-right:18px;}
   tbody tr:last-child td{border-bottom:none;}
   tbody tr:hover{background:var(--surface2);}
   tbody tr.hoverable{cursor:pointer;}

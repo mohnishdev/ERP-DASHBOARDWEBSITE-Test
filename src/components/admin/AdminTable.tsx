@@ -14,7 +14,10 @@ type AdminTableProps<T extends Record<string, unknown>> = {
 export function AdminTable<T extends Record<string, unknown>>({ columns, data }: AdminTableProps<T>) {
   return (
     <div className="table-wrap">
-      <table style={{ width: "100%", tableLayout: "fixed" }}>
+      <table className="admin-table" style={{ width: "100%", tableLayout: "fixed" }}>
+        <colgroup>
+          {columns.map((column) => <col key={column.key} style={{ width: `${100 / columns.length}%` }} />)}
+        </colgroup>
         <thead>
           <tr>
             {columns.map((column) => <th key={column.key}>{column.label}</th>)}

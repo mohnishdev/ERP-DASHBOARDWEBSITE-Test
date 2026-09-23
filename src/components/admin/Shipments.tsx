@@ -75,16 +75,27 @@ function nextDispatchStage(stage: typeof dispatchStages[number]) {
   return { Pending: "Assigned", Assigned: "In Transit", "In Transit": "Delivered", Delivered: undefined }[stage];
 }
 
-export function DispatchView({ onAdvance }: { onAdvance: (booking: Booking) => void }) {
+export function DispatchView({ onAdvance, onMove }: { onAdvance: (booking: Booking) => void; onMove: (booking: Booking, stage: typeof dispatchStages[number]) => void }) {
+  const [draggedBookingId, setDraggedBookingId] = useState<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<string | null>(null);
+
+  const dropBooking = (stage: typeof dispatchStages[number]) => {
+    if (!draggedBookingId) return;
+    const booking = dashboardDB.bookings.find((item) => item.id === draggedBookingId);
+    if (booking && booking.status !== stage) onMove(booking, stage);
+    setDraggedBookingId(null);
+    setDragOverStage(null);
+  };
+
   return <>
     <div className="note">Haulage shipments in Assigned can be grouped into a manifest from here.</div>
     <div className="kanban">
       {dispatchStages.map((stage) => {
         const items = dashboardDB.bookings.filter((booking) => booking.status === stage);
         const nextStage = nextDispatchStage(stage);
-        return <div className="kcol" key={stage}>
+        return <div className={`kcol${dragOverStage === stage ? " drag-over" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragOverStage(stage); }} onDragLeave={() => setDragOverStage(null)} onDrop={(event) => { event.preventDefault(); dropBooking(stage); }} key={stage}>
           <div className="kcol-head"><h4>{stage}</h4><span className="badge b-gray">{items.length}</span></div>
-          {items.length ? items.map((booking) => <div className="kcard" key={booking.id}>
+          {items.length ? items.map((booking) => <div className="kcard" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setDraggedBookingId(booking.id); }} onDragEnd={() => { setDraggedBookingId(null); setDragOverStage(null); }} key={booking.id}>
             <div className="kcard-top"><span className="kcard-name mono" style={{ fontSize: 11.6 }}>{booking.tracking}</span>{typeBadge(booking.type)}</div>
             <div className="kcard-meta">{booking.customer}<br />{booking.origin} → {booking.destination}</div>
             {nextStage && <button className="btn btn-sm" style={{ width: "100%", marginTop: 6 }} onClick={(event) => { event.stopPropagation(); onAdvance(booking); }}>Advance to {nextStage}</button>}
@@ -384,7 +395,7 @@ export function Shipments() {
   const [toastMessage, setToastMessage] = useState("");
   const views = {
     bookings: <BookingsView onGenerateInvoice={openInvoiceForBooking} />,
-    dispatch: <DispatchView onAdvance={advanceDispatch} />,
+    dispatch: <DispatchView onAdvance={advanceDispatch} onMove={moveDispatch} />,
     tracking: <TrackingView />,
     manifests: <ManifestsView manifests={manifests} onOpenManifest={setManifestPreview} />,
     pod: <PODView />,
@@ -457,6 +468,12 @@ export function Shipments() {
     booking.status = nextStage || booking.status;
     setDispatchRevision((current) => current + 1);
     setToastMessage(`${booking.tracking} moved to ${booking.status}`);
+  }
+
+  function moveDispatch(booking: Booking, stage: typeof dispatchStages[number]) {
+    booking.status = stage;
+    setDispatchRevision((current) => current + 1);
+    setToastMessage(`${booking.tracking} moved to ${stage}`);
   }
 
   const downloadInvoice = (invoice: Invoice) => {
