@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AdminTable } from "./AdminTable";
 import { dashboardDB, type AdminRole, type AdminUser, type Announcement, type Integration } from "@/lib/dashboard";
-import { useAppDispatch, useAppState, viewLabels } from "@/context/AppContext";
+import { useAppDispatch, useAppState, useNavigate, viewLabels } from "@/context/AppContext";
 
 const tabs = [
   ["users", "Users"],
@@ -15,13 +15,15 @@ const tabs = [
 
 export function Administration() {
   const dispatch = useAppDispatch();
-  const { currentTab } = useAppState();
+  const navigate = useNavigate();
+  const { currentTab, currentView } = useAppState();
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number][0]>((currentTab.admin as (typeof tabs)[number][0]) || "users");
   const [users, setUsers] = useState<AdminUser[]>(dashboardDB.users);
   const [roles, setRoles] = useState<AdminRole[]>(dashboardDB.roles);
   const [announcements, setAnnouncements] = useState<Announcement[]>(dashboardDB.announcements);
   const [modal, setModal] = useState<"user" | "announcement" | "role" | null>(null);
   const [selectedRole, setSelectedRole] = useState<number | null>(null);
+  const [previewRoleSelection, setPreviewRoleSelection] = useState(dashboardDB.roles[0]?.role || "");
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "" });
   const [announcementForm, setAnnouncementForm] = useState({ title: "", body: "" });
   const [toast, setToast] = useState("");
@@ -81,8 +83,28 @@ export function Administration() {
     showToast(`${dashboardDB.roles[selectedRole].role} access updated`);
   };
 
+  const previewAsRole = () => {
+    const role = roles.find((item) => item.role === previewRoleSelection);
+    if (!role) return;
+    dispatch({ type: "SET_PREVIEW_ROLE", role: role.role });
+    const routePermissions = role.perms.filter((permission) => permission !== "calculator");
+    const destination = routePermissions.includes(currentView) ? currentView : routePermissions[0] || "dashboard";
+    navigate(destination);
+    showToast(`Now previewing the sidebar as ${role.role}`);
+  };
+
   const renderUsers = () => <AdminTable<AdminUser> columns={[{ key: "name", label: "Name" }, { key: "email", label: "Email" }, { key: "role", label: "Role" }, { key: "status", label: "Status", render: (user) => <select className={`switch-select st-${user.status.toLowerCase()}`} value={user.status} onChange={(event) => updateUserStatus(user, event.target.value)}>{["Active", "Suspended"].map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={users} />;
-  const renderRoles = () => <><AdminTable<AdminRole> columns={[{ key: "role", label: "Role", render: (role) => <b>{role.role}</b> }, { key: "desc", label: "Description" }, { key: "users", label: "Users" }, { key: "perms", label: "Modules granted", render: (role) => role.perms.map((permission) => viewLabels[permission] || permission).join(", ") }, { key: "role", label: "Access", render: (role) => <button className="btn btn-sm" type="button" onClick={() => { setSelectedRole(roles.indexOf(role)); setModal("role"); }}>Edit access</button> }]} data={roles} /><div className="card" style={{ marginTop: 16 }}><div className="card-title" style={{ marginBottom: 10 }}>Preview the sidebar as a role</div><p className="note">Role preview is available when the connected administration service is enabled.</p></div></>;
+  const renderRoles = () => <>
+    <AdminTable<AdminRole> columns={[{ key: "role", label: "Role", render: (role) => <b>{role.role}</b> }, { key: "desc", label: "Description" }, { key: "users", label: "Users" }, { key: "perms", label: "Modules granted", render: (role) => role.perms.map((permission) => viewLabels[permission] || permission).join(", ") }, { key: "role", label: "Access", render: (role) => <button className="btn btn-sm" type="button" onClick={() => { setSelectedRole(roles.indexOf(role)); setModal("role"); }}>Edit access</button> }]} data={roles} />
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-title" style={{ marginBottom: 10 }}>Preview the sidebar as a role</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <select aria-label="Preview role" value={previewRoleSelection} onChange={(event) => setPreviewRoleSelection(event.target.value)}>{roles.map((role) => <option key={role.role}>{role.role}</option>)}</select>
+        <button className="btn btn-primary btn-sm" type="button" onClick={previewAsRole}>Preview</button>
+        <span style={{ fontSize: 11.5, color: "var(--text-faint)" }}>Sidebar will only show that role&apos;s granted modules until you exit preview.</span>
+      </div>
+    </div>
+  </>;
   const renderAnnouncements = () => <><div className="note">Active announcements show as a banner on every customer&apos;s dashboard.</div>{announcements.length ? announcements.map((announcement, index) => <div className="card" style={{ marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }} key={announcement.id}><div><div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{announcement.title}</div><p style={{ margin: 0, fontSize: 12.4, color: "var(--text-dim)" }}>{announcement.body}</p><div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>Posted {announcement.date}</div></div><button className="btn btn-sm btn-danger" type="button" onClick={() => removeAnnouncement(index)}>Remove</button></div>) : <div className="empty">No active announcements</div>}</>;
   const renderAudit = () => <AdminTable columns={[{ key: "who", label: "User" }, { key: "action", label: "Action" }, { key: "time", label: "Time" }]} data={dashboardDB.auditLog} />;
   const renderIntegrations = () => <><div className="note">Status shown here is illustrative. It reflects what needs wiring, not a live connection check.</div><AdminTable<Integration> columns={[{ key: "name", label: "Integration" }, { key: "status", label: "Status", render: (integration) => <span className={`badge ${integration.status === "Connected" ? "st-connected" : "b-gray"}`}>{integration.status}</span> }]} data={dashboardDB.integrations} /></>;

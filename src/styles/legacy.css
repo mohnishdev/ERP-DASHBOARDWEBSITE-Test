@@ -220,9 +220,9 @@ section{padding:88px 0;}
 .landing-page .site-footer .btn.light-ghost{color:#fff; border-color:#3a3a40; background:transparent;}
 .landing-page .site-footer .btn.light-ghost:hover{background:#fff; color:var(--ink); border-color:#fff;}
 .landing-page .site-footer .footer-grid{
-  display:grid; grid-template-columns:1.5fr 1fr 1fr 1fr; gap:32px; padding-bottom:34px; border-bottom:1px solid #232327;
+  display:grid; grid-template-columns:minmax(0,1.5fr) repeat(3,minmax(0,1fr)); gap:32px; padding-bottom:34px; border-bottom:1px solid #232327;
 }
-.landing-page .site-footer .footer-brand{padding-right:24px;}
+.landing-page .site-footer .footer-brand{min-width:0; padding-right:24px;}
 .landing-page .site-footer .footer-brand .brand{display:inline-flex; margin-bottom:18px;}
 .landing-page .site-footer .footer-brand .brand img{height:38px; width:auto;}
 .landing-page .site-footer .footer-brand p{
@@ -232,6 +232,12 @@ section{padding:88px 0;}
   display:inline-flex; align-items:center; gap:8px; padding:7px 12px; border:1px solid #2b2b30; background:rgba(255,255,255,0.02); color:#dfe0e6; font-family:var(--mono); font-size:11px; letter-spacing:.06em; text-transform:uppercase;
 }
 .landing-page .site-footer .footer-badge::before{content:""; width:8px; height:8px; border-radius:50%; background:var(--red); box-shadow:0 0 0 4px rgba(229,35,27,.18);}
+.landing-page .site-footer .footer-social{display:flex; align-items:center; gap:12px; margin-top:14px;}
+.landing-page .site-footer .footer-social a{width:34px; height:34px; flex:0 0 34px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; transition:opacity .15s ease;}
+.landing-page .site-footer .footer-social a:hover{opacity:.85;}
+.landing-page .site-footer .footer-social a.whatsapp{background:#25D366;}
+.landing-page .site-footer .footer-social a.email{background:#2b2b30;}
+.landing-page .site-footer .footer-social a.instagram{background:linear-gradient(45deg,#f9ce34,#ee2a7b 60%,#6228d7);}
 .landing-page .site-footer .footer-column{display:flex; flex-direction:column; align-items:flex-start; gap:12px;}
 .landing-page .site-footer .footer-column h4{
   font-size:12px; color:#f4f4f6; text-transform:uppercase; letter-spacing:.12em; margin-bottom:6px; font-family:var(--mono);
@@ -250,7 +256,7 @@ section{padding:88px 0;}
 .landing-page .site-footer .footer-bottom-links a{font-size:12px; color:#a8a8ad; transition:color .15s ease;}
 .landing-page .site-footer .footer-bottom-links a:hover{color:#fff;}
 
-@media (max-width: 900px){
+@media (max-width: 1100px){
   .landing-page .site-footer .footer-grid{grid-template-columns:1fr 1fr;}
   .landing-page .site-footer .footer-brand{grid-column:1 / -1; padding-right:0;}
   .landing-page .site-footer .footer-brand p{max-width:none;}

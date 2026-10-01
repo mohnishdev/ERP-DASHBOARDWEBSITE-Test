@@ -3,7 +3,7 @@
 import { useEffect, useState, type ChangeEvent } from "react";
 import { AdminTable } from "./AdminTable";
 import { useAppDispatch, useAppState } from "@/context/AppContext";
-import { type EmailTemplate, type SupportCall, type SupportChat, type SupportEmail, type SupportSms, type SupportTeamMessage, type SupportTicket, type WhatsAppMessage } from "@/lib/dashboard";
+import { dashboardDB, type EmailTemplate, type SupportCall, type SupportChat, type SupportEmail, type SupportSms, type SupportTeamMessage, type SupportTicket, type WhatsAppMessage } from "@/lib/dashboard";
 
 const communicationModes = ["chat", "email", "sms", "call", "whatsapp"] as const;
 const supportTabs = [["tickets", "Tickets"], ["chat", "Live chat"], ["team", "Team chat"], ["kb", "Knowledge base"]] as const;
@@ -52,7 +52,7 @@ export function Support() {
   const [tickets, setTickets] = useState<SupportTicket[]>(() => readPersistedSupport("tickets", DB.tickets));
   const [chats, setChats] = useState<SupportChat[]>(() => readPersistedSupport("chats", DB.chats));
   const [teamChat, setTeamChat] = useState<SupportTeamMessage[]>(() => readPersistedSupport("teamChat", DB.teamChat));
-  const [knowledgeBase] = useState<{ q: string; a: string }[]>(() => readPersistedSupport("kb", DB.kb));
+  const [knowledgeBase, setKnowledgeBase] = useState<{ q: string; a: string }[]>(() => readPersistedSupport("kb", DB.kb));
   const [emails, setEmails] = useState<SupportEmail[]>(() => readPersistedSupport("emails", DB.emails));
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>(() => readPersistedSupport("emailTemplates", DB.emailTemplates));
   const [smsMessages, setSmsMessages] = useState<SupportSms[]>(() => readPersistedSupport("smsMessages", DB.smsMessages));
@@ -64,12 +64,13 @@ export function Support() {
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
   const [callStarted, setCallStarted] = useState<number | null>(null);
   const [callDuration, setCallDuration] = useState("00:00");
-  const [modal, setModal] = useState<"email" | "template" | "call" | null>(null);
+  const [modal, setModal] = useState<"email" | "template" | "call" | "kb" | null>(null);
   const [selectedEmail, setSelectedEmail] = useState<SupportEmail | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplate | null>(null);
   const [selectedCall, setSelectedCall] = useState<SupportCall | null>(null);
   const [emailForm, setEmailForm] = useState({ to: "", cc: "", bcc: "", subject: "", body: "", invoiceNo: "", attachment: "", attachmentName: "" });
   const [templateForm, setTemplateForm] = useState({ name: "", subject: "", body: "" });
+  const [knowledgeForm, setKnowledgeForm] = useState({ question: "", answer: "" });
   const [toast, setToast] = useState("");
 
   useEffect(() => {
@@ -110,6 +111,19 @@ export function Support() {
     setSelectedEmail(null);
     setSelectedTemplate(null);
     setSelectedCall(null);
+  };
+
+  const saveKnowledgeArticle = () => {
+    const question = knowledgeForm.question.trim();
+    const answer = knowledgeForm.answer.trim();
+    if (!question || !answer) { showToast("Both question and answer are needed"); return; }
+    const nextKnowledgeBase = [{ q: question, a: answer }, ...knowledgeBase];
+    dashboardDB.kb.splice(0, dashboardDB.kb.length, ...nextKnowledgeBase);
+    setKnowledgeBase(nextKnowledgeBase);
+    setKnowledgeForm({ question: "", answer: "" });
+    setModal(null);
+    selectSupportTab("kb");
+    showToast("Article added");
   };
 
   const updateTicket = (ticket: SupportTicket, field: "priority" | "status", value: string) => {
@@ -202,11 +216,12 @@ export function Support() {
   const modeTabs = currentView === "email" ? emailTabs : currentView === "sms" ? smsTabs : currentView === "call" ? callTabs : currentView === "whatsapp" ? whatsappTabs : [];
 
   return <>
-    <div className="view-head"><div><h1>{modeTitle}</h1><p>{modeDescription}</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{currentView === "email" && <button className="btn btn-primary" onClick={() => setCommunicationTab("compose")}>＋ Compose Email</button>}{currentView === "support" && selectedSupportTab === "tickets" && <button className="btn btn-primary" onClick={() => showToast("New ticket form is a stub in this prototype")}>＋ New ticket</button>}{currentView === "support" && selectedSupportTab === "kb" && <button className="btn btn-primary" onClick={() => showToast("Add article form is a stub in this prototype")}>＋ Add article</button>}</div></div>
+    <div className="view-head"><div><h1>{modeTitle}</h1><p>{modeDescription}</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{currentView === "email" && <button className="btn btn-primary" onClick={() => setCommunicationTab("compose")}>＋ Compose Email</button>}{currentView === "support" && selectedSupportTab === "tickets" && <button className="btn btn-primary" onClick={() => showToast("New ticket form is a stub in this prototype")}>＋ New ticket</button>}{currentView === "support" && selectedSupportTab === "kb" && <button className="btn btn-primary" onClick={() => { setKnowledgeForm({ question: "", answer: "" }); setModal("kb"); }}>＋ Add article</button>}</div></div>
     {currentView === "support" ? <div className="tabs">{supportTabs.map(([key, label]) => <div className={`tab${selectedSupportTab === key ? " active" : ""}`} key={key} onClick={() => selectSupportTab(key)}>{label}</div>)}</div> : <div className="tabs">{modeTabs.map((tab) => <div className={`tab${communicationTab === tab ? " active" : ""}`} key={tab} onClick={() => setCommunicationTab(tab)}>{tab === "inbox" ? "Inbox" : tab === "sent" ? "Sent" : tab === "drafts" ? "Drafts" : tab === "templates" ? "Templates" : tab === "dialer" ? "Call" : tab === "log" ? currentView === "call" ? "Call log" : "Chat log" : "Compose"}</div>)}</div>}
     {body}
     {modal === "email" && selectedEmail && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>{selectedEmail.subject}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="doc-grid"><div><div className="lbl">To</div>{selectedEmail.to}</div><div style={{ textAlign: "right" }}><div className="lbl">Status</div>{selectedEmail.status}</div></div><div className="lbl" style={{ marginTop: 14 }}>Message</div><div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7, marginTop: 6 }}>{selectedEmail.body}</div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button>{selectedEmail.status === "Draft" && <button className="btn btn-primary" onClick={() => { setEmailForm({ to: selectedEmail.to, cc: selectedEmail.cc, bcc: selectedEmail.bcc, subject: selectedEmail.subject, body: selectedEmail.body, invoiceNo: selectedEmail.invoiceNo, attachment: selectedEmail.attachment, attachmentName: selectedEmail.attachmentName }); closeModal(); setCommunicationTab("compose"); }}>Edit draft</button>}</div></div></div>}
     {modal === "template" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>{selectedTemplate ? "Edit template" : "New template"}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Name</label><input value={templateForm.name} onChange={(event) => setTemplateForm({ ...templateForm, name: event.target.value })} /></div><div className="field"><label>Subject</label><input value={templateForm.subject} onChange={(event) => setTemplateForm({ ...templateForm, subject: event.target.value })} /></div><div className="field"><label>Body</label><textarea style={{ minHeight: 220, width: "100%" }} value={templateForm.body} onChange={(event) => setTemplateForm({ ...templateForm, body: event.target.value })} /></div><div className="note">Available variables: {"{{customer}}, {{invoice}}, {{tracking}}"}</div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Cancel</button><button className="btn btn-primary" onClick={saveTemplate}>Save template</button></div></div></div>}
+    {modal === "kb" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>Add knowledge base article</h3><button className="x-btn" type="button" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Question</label><input value={knowledgeForm.question} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, question: event.target.value })} /></div><div className="field"><label>Answer</label><textarea rows={3} value={knowledgeForm.answer} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, answer: event.target.value })} /></div></div><div className="modal-foot"><button className="btn" type="button" onClick={closeModal}>Cancel</button><button className="btn btn-primary" type="button" onClick={saveKnowledgeArticle}>Add article</button></div></div></div>}
     {modal === "call" && selectedCall && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>Call details</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="doc-grid"><div><div className="lbl">Number</div>{selectedCall.number}</div><div style={{ textAlign: "right" }}><div className="lbl">Status</div>{selectedCall.status}</div></div><p><b>Result:</b> {selectedCall.result}</p><p><b>Duration:</b> {selectedCall.duration}</p><p><b>Date:</b> {selectedCall.date}</p></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button></div></div></div>}
     {activeCallId && <div className="modal-backdrop"><div className="modal"><div className="modal-head"><h3>Internet call</h3></div><div className="modal-body" style={{ textAlign: "center" }}><div style={{ fontSize: 28, fontWeight: 800 }}>{calls.find((call) => call.id === activeCallId)?.number}</div><div className="note">Call in progress · {callDuration}</div></div><div className="modal-foot"><button className="btn btn-danger" onClick={endCall}>☎ End call</button></div></div></div>}
     {toast && <div className="toast-wrap"><div className="toast">{toast}</div></div>}

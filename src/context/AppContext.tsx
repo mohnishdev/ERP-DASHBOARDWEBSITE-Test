@@ -121,6 +121,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (view === "warehouse") router.push("/admin/warehouse");
     if (view === "finance") router.push("/admin/finance");
     if (view === "hr") router.push("/admin/hr");
+    if (view === "reports") router.push("/admin/reports");
     if (view === "admin") router.push("/admin/admin");
     if (view === "support" || view === "chat" || view === "email" || view === "sms" || view === "call" || view === "whatsapp") {
       if (pathname !== "/admin/support") router.push("/admin/support");

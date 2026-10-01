@@ -6,7 +6,7 @@ import { useAppDispatch, useAppState, useNavigate } from "@/context/AppContext";
 type NavItem = {
   key: string;
   label: string;
-  icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "people" | "headset" | "chart" | "shield" | "message" | "mail" | "phone" | "whatsapp";
+  icon: "grid" | "funnel" | "idcard" | "box" | "truck" | "wheel" | "shelf" | "bank" | "people" | "headset" | "chart" | "shield" | "message" | "mail" | "phone" | "whatsapp" | "calc";
   active?: boolean;
 };
 
@@ -151,20 +151,35 @@ function iconMarkup(icon: NavItem["icon"]) {
         <path d="M9.5 12.5l1.5 1.5 3.5-4" />
       </svg>
     ),
+    calc: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="5" y="3" width="14" height="18" rx="2" />
+        <path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 18h.01M12 18h.01M16 18h.01" />
+      </svg>
+    ),
   };
 
   return icons[icon];
 }
 
-export function Sidebar() {
-  const { currentView, currentTab, sidebarOpen, DB } = useAppState();
+export function Sidebar({ onOpenCalculator }: { onOpenCalculator: () => void }) {
+  const { currentView, currentTab, sidebarOpen, DB, previewRole } = useAppState();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const [supportMenuOpen, setSupportMenuOpen] = useState(false);
   const needsAttention = DB.chats.filter((chat) => chat.status === "Open" || chat.status === "Pending").length;
+  const selectedRole = previewRole ? DB.roles.find((role) => role.role === previewRole) : undefined;
+  const visibleGroups = selectedRole ? navGroups.map((group) => ({ ...group, items: group.items.filter((item) => selectedRole.perms.includes(item.key)) })).filter((group) => group.items.length) : navGroups;
+
+  const exitRolePreview = () => {
+    dispatch({ type: "SET_PREVIEW_ROLE", role: null });
+    navigate("admin");
+    dispatch({ type: "SET_CURRENT_TAB", view: "admin", tab: "roles" });
+  };
 
   return (
     <aside id="sidebar" className={sidebarOpen ? "open" : undefined}>
+      {selectedRole && <div className="preview-banner"><span>Previewing as {selectedRole.role}</span><button type="button" onClick={exitRolePreview}>Exit preview</button></div>}
       <div className="brand">
         <img src="/legacy-assets/embedded_asset_1.png" alt="JAAD Logistics" />
         <div>
@@ -174,7 +189,7 @@ export function Sidebar() {
       </div>
 
       <nav className="navlist">
-        {navGroups.map((group) => (
+        {visibleGroups.map((group) => (
           <div key={group.label}>
             <div className="nav-group-label">{group.label}</div>
             {group.items.map((item) => (
@@ -200,6 +215,7 @@ export function Sidebar() {
               </a>
               )
             ))}
+            {group.label === "Finance & People" && (!selectedRole || selectedRole.perms.includes("calculator")) && <button className="nav-item" type="button" onClick={onOpenCalculator}>{iconMarkup("calc")}<span>Calculator</span></button>}
           </div>
         ))}
       </nav>
