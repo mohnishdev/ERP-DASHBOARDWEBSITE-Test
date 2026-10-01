@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { jsPDF } from "jspdf";
 import { authStorageKey, useAppDispatch, useAppState } from "@/context/AppContext";
-import type { Booking, SupportChat } from "@/lib/dashboard";
+import type { Booking, Invoice, SupportChat } from "@/lib/dashboard";
 
 type CustomerView = "overview" | "shipments" | "track" | "invoices" | "profile" | "support";
 
@@ -29,6 +30,116 @@ function statusClass(status: string) {
   return "b-gray";
 }
 
+function makeCustomerTrackingNumber(pickup: string, bookings: Booking[]) {
+  const [year, month, day] = pickup.split("-");
+  const highestSequence = bookings.reduce((highest, booking) => {
+    const sequence = Number(booking.tracking.split("/").pop()) || 0;
+    return Math.max(highest, sequence);
+  }, 238);
+  return `JAAD/${day}${month}/${year}/${String(highestSequence + 1).padStart(5, "0")}`;
+}
+
+function formatShipmentAddress(address?: string, city?: string, state?: string, country?: string) {
+  return [address, [city, state, country].filter(Boolean).join(", ")].filter(Boolean).join("\n");
+}
+
+function ShipmentDocument({ booking, events, invoice }: { booking: Booking; events: string[][]; invoice?: Invoice }) {
+  const hasParties = Boolean(booking.senderName || booking.receiverName);
+  return <div className="doc">
+    <div className="doc-head">
+      <div><Image src="/legacy-assets/embedded_asset_1.png" width={305} height={201} alt="JAAD Logistics" style={{ height: 30, width: "auto" }} /></div>
+      <div className="co">JAAD Logistics Ltd<br />info@jaadlogistics.com</div>
+    </div>
+    <h2>Shipment {booking.tracking}</h2>
+    <div className="doc-route">
+      <div className="pt"><div className="lbl">Picked up from</div><div className="v">{booking.origin}</div></div>
+      <div className="arrow">→</div>
+      <div className="pt" style={{ textAlign: "right" }}><div className="lbl">Headed to</div><div className="v">{booking.destination}</div></div>
+    </div>
+    {hasParties && <div className="doc-grid">
+      <div>
+        <div className="lbl">Sender</div>
+        {booking.senderName || "—"}{booking.senderPhone && <> · {booking.senderPhone}</>}<br />
+        {formatShipmentAddress(booking.senderAddress, booking.senderCity, booking.senderState, booking.senderCountry).split("\n").map((line, index) => <span key={`sender-${index}`}>{index > 0 && <br />}{line}</span>)}
+      </div>
+      <div style={{ textAlign: "right" }}>
+        <div className="lbl">Receiver</div>
+        {booking.receiverName || "—"}{booking.receiverPhone && <> · {booking.receiverPhone}</>}<br />
+        {formatShipmentAddress(booking.receiverAddress, booking.receiverCity, booking.receiverState, booking.receiverCountry).split("\n").map((line, index) => <span key={`receiver-${index}`}>{index > 0 && <br />}{line}</span>)}
+      </div>
+    </div>}
+    <div className="doc-grid">
+      <div><div className="lbl">Customer</div>{booking.customer}</div>
+      <div style={{ textAlign: "right" }}><div className="lbl">Pickup date</div>{formatDate(booking.pickup)}<br /><div className="lbl" style={{ marginTop: 8 }}>Status</div><span className={`badge ${statusClass(booking.status)}`}>{booking.status}</span></div>
+    </div>
+    <div className="doc-grid">
+      <div><div className="lbl">Mode</div>{booking.type}</div>
+      <div style={{ textAlign: "right" }}><div className="lbl">Weight</div>{booking.weight}</div>
+    </div>
+    <div className="doc-grid">
+      <div><div className="lbl">Declared value</div>{formatNaira(booking.value)}</div>
+      <div style={{ textAlign: "right" }}>
+        <div className="lbl">Invoice</div>
+        {invoice?.posted === false ? `${invoice.no} (Draft, awaiting review)` : invoice ? <Link href={`/customer/invoices#invoice-${encodeURIComponent(invoice.no)}`}>{invoice.no}</Link> : "Not yet issued"}
+      </div>
+    </div>
+    {booking.notes && <div className="note">{booking.notes}</div>}
+    <div className="form-section-title">Tracking history</div>
+    {events.length ? events.map(([time, description], index) => (
+      <div key={`${time}-${index}`} style={{ display: "flex", gap: 12, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 12 }}>
+        <span className="mono" style={{ color: "var(--text-faint)", minWidth: 120 }}>{time}</span>
+        <span>{description}</span>
+      </div>
+    )) : <div className="empty">No events yet</div>}
+  </div>;
+}
+
+function downloadShipmentPdf(booking: Booking, events: string[][]) {
+  const document = new jsPDF({ unit: "pt", format: "a4" });
+  const margin = 48;
+  let y = 56;
+  document.setFontSize(16);
+  document.text("JAAD Logistics Ltd", margin, y);
+  y += 24;
+  document.setFontSize(13);
+  document.text(`Shipment ${booking.tracking}`, margin, y);
+  y += 26;
+
+  const addField = (label: string, value: string) => {
+    const lines = document.splitTextToSize(value || "—", 340) as string[];
+    if (y + Math.max(lines.length, 1) * 14 > 770) {
+      document.addPage();
+      y = 48;
+    }
+    document.setFontSize(9);
+    document.setTextColor(120);
+    document.text(label.toUpperCase(), margin, y);
+    document.setFontSize(10);
+    document.setTextColor(30);
+    document.text(lines, margin + 130, y);
+    y += Math.max(lines.length, 1) * 16 + 6;
+  };
+
+  addField("Customer", booking.customer);
+  addField("From", booking.origin);
+  addField("To", booking.destination);
+  if (booking.senderName || booking.senderPhone || booking.senderAddress || booking.senderCity) {
+    addField("Sender", [booking.senderName, booking.senderPhone, formatShipmentAddress(booking.senderAddress, booking.senderCity, booking.senderState, booking.senderCountry)].filter(Boolean).join(" · "));
+  }
+  if (booking.receiverName || booking.receiverPhone || booking.receiverAddress || booking.receiverCity) {
+    addField("Receiver", [booking.receiverName, booking.receiverPhone, formatShipmentAddress(booking.receiverAddress, booking.receiverCity, booking.receiverState, booking.receiverCountry)].filter(Boolean).join(" · "));
+  }
+  addField("Mode", booking.type);
+  addField("Pickup date", formatDate(booking.pickup));
+  addField("Status", booking.status);
+  addField("Weight", booking.weight);
+  addField("Declared value", formatNaira(booking.value));
+  if (booking.notes) addField("Notes", booking.notes);
+  y += 10;
+  events.forEach(([time, description]) => addField(time, description));
+  document.save(`${booking.tracking.replace(/\//g, "-")}.pdf`);
+}
+
 export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   const router = useRouter();
   const dispatch = useAppDispatch();
@@ -37,7 +148,12 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [trackingInput, setTrackingInput] = useState("");
   const [submittedTracking, setSubmittedTracking] = useState("");
+  const [selectedTrackingNumber, setSelectedTrackingNumber] = useState("");
   const [selectedShipment, setSelectedShipment] = useState<Booking | null>(null);
+  const [printBooking, setPrintBooking] = useState<Booking | null>(null);
+  const [bookingModalOpen, setBookingModalOpen] = useState(false);
+  const [bookingError, setBookingError] = useState("");
+  const [bookingNotice, setBookingNotice] = useState("");
   const [supportChat, setSupportChat] = useState<SupportChat | null>(() => {
     const inMemoryChat = DB.chats.find((chat) => chat.visitor === customerName) || null;
     if (typeof window === "undefined") return inMemoryChat;
@@ -55,6 +171,36 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   }, [theme]);
 
   useEffect(() => {
+    if (!printBooking) return;
+    const clearPrintBooking = () => setPrintBooking(null);
+    window.addEventListener("afterprint", clearPrintBooking, { once: true });
+    const frame = window.requestAnimationFrame(() => window.print());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("afterprint", clearPrintBooking);
+    };
+  }, [printBooking]);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null");
+      const savedBookings = saved?.data?.bookings as Booking[] | undefined;
+      const savedInvoices = saved?.data?.invoices as Invoice[] | undefined;
+      const knownTrackingNumbers = new Set(DB.bookings.map((booking) => booking.tracking));
+      const knownInvoiceNumbers = new Set(DB.invoices.map((invoice) => invoice.no));
+      const restoredBookings = Array.isArray(savedBookings) ? savedBookings.filter((booking) => !knownTrackingNumbers.has(booking.tracking)) : [];
+      const restoredInvoices = Array.isArray(savedInvoices) ? savedInvoices.filter((invoice) => !knownInvoiceNumbers.has(invoice.no)) : [];
+      if (!restoredBookings.length && !restoredInvoices.length) return;
+
+      DB.bookings.push(...restoredBookings);
+      DB.invoices.push(...restoredInvoices);
+      dispatch({ type: "SET_DB", DB: { ...DB, bookings: [...DB.bookings], invoices: [...DB.invoices] } });
+    } catch {
+      // Keep the built-in sample data available if stored bookings cannot be read.
+    }
+  }, [DB, dispatch]);
+
+  useEffect(() => {
     if (authReady && currentUser?.type !== "customer") {
       router.replace(currentUser?.type === "admin" ? "/admin/dashboard" : "/");
     }
@@ -65,9 +211,13 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   const signedInCustomerName = customerName;
   const customerRecord = DB.customers.find((customer) => customer.name === signedInCustomerName);
   const bookings = DB.bookings.filter((booking) => booking.customer === signedInCustomerName);
-  const trackedBooking = submittedTracking
-    ? bookings.find((booking) => booking.tracking.toLowerCase() === submittedTracking.toLowerCase())
-    : undefined;
+  const trackingMatches = submittedTracking
+    ? bookings.filter((booking) => booking.tracking.toLowerCase().includes(submittedTracking.toLowerCase()))
+    : [];
+  const exactTrackingMatch = trackingMatches.find((booking) => booking.tracking.toLowerCase() === submittedTracking.toLowerCase());
+  const trackedBooking = exactTrackingMatch
+    || trackingMatches.find((booking) => booking.tracking === selectedTrackingNumber)
+    || (trackingMatches.length === 1 ? trackingMatches[0] : undefined);
   const trackingEvents = trackedBooking ? DB.trackingEvents[trackedBooking.id] || [] : [];
   const trackingInvoice = trackedBooking
     ? DB.invoices.find((invoice) => invoice.customer === customerName && invoice.linkedShipment === trackedBooking.tracking)
@@ -89,6 +239,94 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
     sessionStorage.removeItem(authStorageKey);
     dispatch({ type: "SET_CURRENT_USER", user: null });
     router.replace("/");
+  };
+
+  const issueShipmentInvoice = (booking: Booking) => {
+    if (DB.invoices.some((invoice) => invoice.linkedShipment === booking.tracking)) return;
+    const sequence = DB.invoices.reduce((highest, invoice) => Math.max(highest, Number(invoice.no.replace("INV-", "")) || 0), 409) + 1;
+    const invoice: Invoice = {
+      no: `INV-${String(sequence).padStart(5, "0")}`,
+      customer: booking.customer,
+      amount: booking.value,
+      status: "Pending",
+      date: new Date().toISOString().slice(0, 10),
+      linkedShipment: booking.tracking,
+      items: [{ desc: `${booking.type} freight, ${booking.origin} to ${booking.destination} (${booking.tracking})`, amount: booking.value }],
+      posted: false,
+    };
+    DB.invoices.unshift(invoice);
+    dispatch({ type: "SET_DB", DB: { ...DB, invoices: [...DB.invoices] } });
+    try {
+      const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null") || {};
+      localStorage.setItem("jaad_erp_state_v3", JSON.stringify({
+        ...saved,
+        savedAt: Date.now(),
+        data: { ...(saved.data || {}), invoices: DB.invoices },
+      }));
+    } catch {
+      // Keep the draft available for this session if storage is unavailable.
+    }
+  };
+
+  const submitCustomerBooking = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const value = (name: string) => String(form.get(name) || "").trim();
+    const receiverName = value("receiverName");
+    const receiverCity = value("receiverCity");
+    if (!receiverName || !receiverCity) {
+      setBookingError("Please add the receiver's name and city so we know where this is going.");
+      return;
+    }
+
+    const pickup = value("pickup") || new Date().toISOString().slice(0, 10);
+    const senderCity = value("senderCity") || "—";
+    const senderState = value("senderState");
+    const receiverState = value("receiverState");
+    const tracking = makeCustomerTrackingNumber(pickup, DB.bookings);
+    const booking: Booking = {
+      id: `cust-${Date.now()}-${tracking.split("/").pop()}`,
+      tracking,
+      customer: signedInCustomerName,
+      origin: senderCity + (senderState ? `, ${senderState}` : ""),
+      destination: receiverCity + (receiverState ? `, ${receiverState}` : ""),
+      type: value("type") || "Road",
+      status: "Pending",
+      pickup,
+      weight: value("weight") || "—",
+      value: Number(value("value")) || 0,
+      notes: value("notes"),
+      senderName: value("senderName") || signedInCustomerName,
+      senderPhone: value("senderPhone"),
+      senderAddress: value("senderAddress"),
+      senderCity,
+      senderState,
+      senderCountry: value("senderCountry") || "Nigeria",
+      receiverName,
+      receiverPhone: value("receiverPhone"),
+      receiverAddress: value("receiverAddress"),
+      receiverCity,
+      receiverState,
+      receiverCountry: value("receiverCountry") || "Nigeria",
+    };
+
+    DB.bookings.unshift(booking);
+    dispatch({ type: "SET_DB", DB: { ...DB, bookings: [...DB.bookings] } });
+    try {
+      const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null") || {};
+      localStorage.setItem("jaad_erp_state_v3", JSON.stringify({
+        ...saved,
+        savedAt: Date.now(),
+        data: { ...(saved.data || {}), bookings: DB.bookings },
+      }));
+    } catch {
+      // Keep the new booking available for this session if storage is unavailable.
+    }
+
+    setBookingModalOpen(false);
+    setBookingError("");
+    setBookingNotice(`Shipment booked: ${tracking}`);
+    event.currentTarget.reset();
   };
 
   const sendCustomerMessage = (event: React.FormEvent<HTMLFormElement>) => {
@@ -301,7 +539,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
                   </thead>
                   <tbody>
                     {invoices.map((invoice) => (
-                      <tr key={invoice.no}>
+                      <tr id={`invoice-${invoice.no}`} key={invoice.no}>
                         <td className="mono">{invoice.no}</td>
                         <td>{formatDate(invoice.date)}</td>
                         <td>{formatNaira(invoice.amount)}</td>
@@ -321,44 +559,25 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
             </div>
             <div className="card">
               <div style={{ display: "flex", gap: 9, maxWidth: 420 }}>
-                <input id="track-input" placeholder="e.g. JAAD/2807/2026/00231" style={{ flex: 1 }} value={trackingInput} onChange={(event) => setTrackingInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setSubmittedTracking(trackingInput.trim()); }} />
-                <button className="btn btn-primary" type="button" onClick={() => setSubmittedTracking(trackingInput.trim())}>Track</button>
+                <input id="track-input" placeholder="e.g. JAAD/2807/2026/00231" style={{ flex: 1 }} value={trackingInput} onChange={(event) => setTrackingInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setSelectedTrackingNumber(""); setSubmittedTracking(trackingInput.trim()); } }} />
+                <button className="btn btn-primary" type="button" onClick={() => { setSelectedTrackingNumber(""); setSubmittedTracking(trackingInput.trim()); }}>Track</button>
               </div>
               <div id="track-result">
-                {submittedTracking && !trackedBooking && <div className="empty">No shipment matches that tracking number yet, keep typing</div>}
-                {trackedBooking && <div className="doc-page-wrap" style={{ marginTop: 16 }}>
-                  <div className="doc">
-                    <div className="doc-head">
-                      <div><Image src="/legacy-assets/embedded_asset_1.png" width={305} height={201} alt="JAAD Logistics" style={{ height: 30, width: "auto" }} /></div>
-                      <div className="co">JAAD Logistics Ltd<br />info@jaadlogistics.com</div>
-                    </div>
-                    <h2>Shipment {trackedBooking.tracking}</h2>
-                    <div className="doc-route">
-                      <div className="pt"><div className="lbl">Picked up from</div><div className="v">{trackedBooking.origin}</div></div>
-                      <div className="arrow">→</div>
-                      <div className="pt" style={{ textAlign: "right" }}><div className="lbl">Headed to</div><div className="v">{trackedBooking.destination}</div></div>
-                    </div>
-                    <div className="doc-grid">
-                      <div><div className="lbl">Customer</div>{trackedBooking.customer}</div>
-                      <div style={{ textAlign: "right" }}><div className="lbl">Pickup date</div>{formatDate(trackedBooking.pickup)}<br /><div className="lbl" style={{ marginTop: 8 }}>Status</div><span className={`badge ${statusClass(trackedBooking.status)}`}>{trackedBooking.status}</span></div>
-                    </div>
-                    <div className="doc-grid">
-                      <div><div className="lbl">Mode</div>{trackedBooking.type}</div>
-                      <div style={{ textAlign: "right" }}><div className="lbl">Weight</div>{trackedBooking.weight}</div>
-                    </div>
-                    <div className="doc-grid">
-                      <div><div className="lbl">Declared value</div>{formatNaira(trackedBooking.value)}</div>
-                      <div style={{ textAlign: "right" }}><div className="lbl">Invoice</div>{trackingInvoice?.no || "Not yet issued"}</div>
-                    </div>
-                    {trackedBooking.notes && <div className="note">{trackedBooking.notes}</div>}
-                    <div className="form-section-title">Tracking history</div>
-                    {trackingEvents.length ? trackingEvents.map((trackingEvent, index) => (
-                      <div key={`${trackingEvent[0]}-${index}`} style={{ display: "flex", gap: 12, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 12 }}>
-                        <span className="mono" style={{ color: "var(--text-faint)", minWidth: 120 }}>{trackingEvent[0]}</span>
-                        <span>{trackingEvent[1]}</span>
-                      </div>
-                    )) : <div className="empty">No events yet</div>}
+                {submittedTracking && trackingMatches.length === 0 && <div className="empty">No shipment matches that tracking number yet, keep typing</div>}
+                {!exactTrackingMatch && trackingMatches.length > 1 && !selectedTrackingNumber && <div style={{ marginTop: 14 }}>
+                  <p style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 8 }}>Several of your shipments match. Select one to view its tracking document.</p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {trackingMatches.map((booking) => <button className="btn" type="button" key={booking.id} aria-pressed={selectedTrackingNumber === booking.tracking} onClick={() => setSelectedTrackingNumber(booking.tracking)}>
+                      <span className="mono">{booking.tracking}</span><span>{booking.origin} → {booking.destination}</span>
+                    </button>)}
                   </div>
+                </div>}
+                {trackedBooking && <div className="doc-page-wrap" style={{ marginTop: 16 }}>
+                  <ShipmentDocument booking={trackedBooking} events={trackingEvents} invoice={trackingInvoice} />
+                </div>}
+                {trackedBooking && <div style={{ display: "flex", justifyContent: "flex-end", gap: 9, marginTop: 12 }}>
+                  <button className="btn" type="button" onClick={() => downloadShipmentPdf(trackedBooking, trackingEvents)}>Download PDF</button>
+                  <button className="btn btn-primary" type="button" onClick={() => setPrintBooking(trackedBooking)}>Print</button>
                 </div>}
               </div>
             </div>
@@ -402,7 +621,9 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
                 <h1>My Shipments</h1>
                 <p>Every shipment booked under your account.</p>
               </div>
+              <button className="btn btn-primary" type="button" onClick={() => { setBookingError(""); setBookingNotice(""); setBookingModalOpen(true); }}>+ Book a shipment</button>
             </div>
+            {bookingNotice && <div role="status" style={{ background: "var(--green-dim)", color: "var(--green)", fontSize: 12.4, fontWeight: 700, padding: "10px 14px", borderRadius: 8, marginBottom: 12 }}>{bookingNotice}</div>}
             <div className="table-wrap">
               {bookings.length ? (
                 <table>
@@ -436,6 +657,55 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
           </>}
         </main>
       </div>
+      {bookingModalOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setBookingModalOpen(false); }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="customer-booking-title">
+          <form onSubmit={submitCustomerBooking}>
+            <div className="modal-head">
+              <h3 id="customer-booking-title">Book a shipment</h3>
+              <button className="x-btn" type="button" aria-label="Close booking form" onClick={() => setBookingModalOpen(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-section-title">Sender</div>
+              <div className="field-row">
+                <div className="field"><label htmlFor="booking-sender-name">Full name</label><input id="booking-sender-name" name="senderName" /></div>
+                <div className="field"><label htmlFor="booking-sender-phone">Phone number</label><input id="booking-sender-phone" name="senderPhone" type="tel" /></div>
+              </div>
+              <div className="field"><label htmlFor="booking-sender-address">Address</label><input id="booking-sender-address" name="senderAddress" /></div>
+              <div className="field-row">
+                <div className="field"><label htmlFor="booking-sender-city">City</label><input id="booking-sender-city" name="senderCity" /></div>
+                <div className="field"><label htmlFor="booking-sender-state">State</label><input id="booking-sender-state" name="senderState" /></div>
+                <div className="field"><label htmlFor="booking-sender-country">Country</label><input id="booking-sender-country" name="senderCountry" defaultValue="Nigeria" /></div>
+              </div>
+              <div className="form-section-title">Receiver</div>
+              <div className="field-row">
+                <div className="field"><label htmlFor="booking-receiver-name">Full name</label><input id="booking-receiver-name" name="receiverName" /></div>
+                <div className="field"><label htmlFor="booking-receiver-phone">Phone number</label><input id="booking-receiver-phone" name="receiverPhone" type="tel" /></div>
+              </div>
+              <div className="field"><label htmlFor="booking-receiver-address">Address</label><input id="booking-receiver-address" name="receiverAddress" /></div>
+              <div className="field-row">
+                <div className="field"><label htmlFor="booking-receiver-city">City</label><input id="booking-receiver-city" name="receiverCity" /></div>
+                <div className="field"><label htmlFor="booking-receiver-state">State</label><input id="booking-receiver-state" name="receiverState" /></div>
+                <div className="field"><label htmlFor="booking-receiver-country">Country</label><input id="booking-receiver-country" name="receiverCountry" defaultValue="Nigeria" /></div>
+              </div>
+              <div className="form-section-title">Shipment</div>
+              <div className="field-row">
+                <div className="field"><label htmlFor="booking-type">Mode</label><select id="booking-type" name="type" defaultValue="Road"><option>Road</option><option>Haulage</option><option>Air</option><option>Sea</option></select></div>
+                <div className="field"><label htmlFor="booking-pickup">Preferred pickup date</label><input id="booking-pickup" name="pickup" type="date" /></div>
+              </div>
+              <div className="field-row">
+                <div className="field"><label htmlFor="booking-weight">Estimated weight</label><input id="booking-weight" name="weight" placeholder="e.g. 2t" /></div>
+                <div className="field"><label htmlFor="booking-value">Declared value (₦)</label><input id="booking-value" name="value" type="number" min="0" step="1" placeholder="0" /></div>
+              </div>
+              <div className="field"><label htmlFor="booking-notes">Notes (optional)</label><textarea id="booking-notes" name="notes" rows={2} /></div>
+              {bookingError && <div className="note" role="alert" style={{ color: "var(--red)" }}>{bookingError}</div>}
+            </div>
+            <div className="modal-foot">
+              <button className="btn" type="button" onClick={() => setBookingModalOpen(false)}>Cancel</button>
+              <button className="btn btn-primary" type="submit">Submit booking</button>
+            </div>
+          </form>
+        </div>
+      </div>}
       {selectedShipment && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setSelectedShipment(null); }}>
         <div className="modal doc-modal" role="dialog" aria-modal="true" aria-label={`Shipment ${selectedShipment.tracking}`}>
           <div className="modal-head">
@@ -443,42 +713,17 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
             <button className="x-btn" type="button" aria-label="Close shipment details" onClick={() => setSelectedShipment(null)}>×</button>
           </div>
           <div className="modal-body">
-            <div className="doc">
-              <div className="doc-head">
-                <div><Image src="/legacy-assets/embedded_asset_1.png" width={305} height={201} alt="JAAD Logistics" style={{ height: 30, width: "auto" }} /></div>
-                <div className="co">JAAD Logistics Ltd<br />info@jaadlogistics.com</div>
-              </div>
-              <h2>Shipment {selectedShipment.tracking}</h2>
-              <div className="doc-route">
-                <div className="pt"><div className="lbl">Picked up from</div><div className="v">{selectedShipment.origin}</div></div>
-                <div className="arrow">→</div>
-                <div className="pt" style={{ textAlign: "right" }}><div className="lbl">Headed to</div><div className="v">{selectedShipment.destination}</div></div>
-              </div>
-              <div className="doc-grid">
-                <div><div className="lbl">Customer</div>{selectedShipment.customer}</div>
-                <div style={{ textAlign: "right" }}><div className="lbl">Pickup date</div>{formatDate(selectedShipment.pickup)}<br /><div className="lbl" style={{ marginTop: 8 }}>Status</div><span className={`badge ${statusClass(selectedShipment.status)}`}>{selectedShipment.status}</span></div>
-              </div>
-              <div className="doc-grid">
-                <div><div className="lbl">Mode</div>{selectedShipment.type}</div>
-                <div style={{ textAlign: "right" }}><div className="lbl">Weight</div>{selectedShipment.weight}</div>
-              </div>
-              <div className="doc-grid">
-                <div><div className="lbl">Declared value</div>{formatNaira(selectedShipment.value)}</div>
-                <div style={{ textAlign: "right" }}><div className="lbl">Invoice</div>{selectedShipmentInvoice?.no || "Not yet issued"}</div>
-              </div>
-              {selectedShipment.notes && <div className="note">{selectedShipment.notes}</div>}
-              <div className="form-section-title">Tracking history</div>
-              {selectedShipmentEvents.length ? selectedShipmentEvents.map((trackingEvent, index) => (
-                <div key={`${trackingEvent[0]}-${index}`} style={{ display: "flex", gap: 12, padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 12 }}>
-                  <span className="mono" style={{ color: "var(--text-faint)", minWidth: 120 }}>{trackingEvent[0]}</span>
-                  <span>{trackingEvent[1]}</span>
-                </div>
-              )) : <div className="empty">No events yet</div>}
-            </div>
+            <ShipmentDocument booking={selectedShipment} events={selectedShipmentEvents} invoice={selectedShipmentInvoice} />
           </div>
-          <div className="modal-foot"><button className="btn" type="button" onClick={() => setSelectedShipment(null)}>Close</button></div>
+          <div className="modal-foot">
+            {!selectedShipmentInvoice && <button className="btn" type="button" onClick={() => issueShipmentInvoice(selectedShipment)}>Issue invoice</button>}
+            <button className="btn" type="button" onClick={() => setSelectedShipment(null)}>Close</button>
+            <button className="btn" type="button" onClick={() => downloadShipmentPdf(selectedShipment, selectedShipmentEvents)}>Download PDF</button>
+            <button className="btn btn-primary" type="button" onClick={() => setPrintBooking(selectedShipment)}>Print</button>
+          </div>
         </div>
       </div>}
+      {printBooking && <div id="print-area" aria-hidden="true"><ShipmentDocument booking={printBooking} events={DB.trackingEvents[printBooking.id] || []} invoice={DB.invoices.find((invoice) => invoice.customer === customerName && invoice.linkedShipment === printBooking.tracking)} /></div>}
     </div>
   );
 }

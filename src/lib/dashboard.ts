@@ -10,6 +10,18 @@ export type Booking = {
   weight: string;
   value: number;
   notes: string;
+  senderName?: string;
+  senderPhone?: string;
+  senderAddress?: string;
+  senderCity?: string;
+  senderState?: string;
+  senderCountry?: string;
+  receiverName?: string;
+  receiverPhone?: string;
+  receiverAddress?: string;
+  receiverCity?: string;
+  receiverState?: string;
+  receiverCountry?: string;
 };
 
 export type Invoice = {
@@ -21,6 +33,7 @@ export type Invoice = {
   paidDate?: string | null;
   linkedShipment: string | null;
   items: { desc: string; amount: number }[];
+  posted?: boolean;
 };
 
 export type Expense = {
