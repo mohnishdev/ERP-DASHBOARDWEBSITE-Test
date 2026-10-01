@@ -178,6 +178,18 @@ export type Customer = {
   since: string;
   status: string;
   assignedTo?: string;
+  email?: string;
+  address?: string;
+  linkedin?: string;
+  profile?: {
+    firstName: string;
+    lastName: string;
+    companyName: string;
+    phone: string;
+    email: string;
+    companyAddress: string;
+    linkedin: string;
+  };
 };
 export const jobPostingsStorageKey = "jaad_job_postings";
 export type AdminUser = { name: string; email: string; role: string; status: string };
@@ -185,10 +197,12 @@ export type AdminRole = { role: string; desc: string; users: number; perms: stri
 export type AuditEntry = { who: string; action: string; time: string };
 export type Integration = { name: string; status: string };
 export type Announcement = { id: string; title: string; body: string; date?: string };
+export type AppNotification = { t: string; time: string };
 
 export const dashboardDB = {
   dismissedAlerts: [] as string[],
   announcements: [] as Announcement[],
+  notifications: [] as AppNotification[],
   users: [
     { name: "Oluwaseun John", email: "oluwaseun@jaadlogistics.com", role: "Super Admin", status: "Active" },
     { name: "Abidoye Joseph Damilare", email: "admin@jaadlogistics.com", role: "Super Admin", status: "Active" },

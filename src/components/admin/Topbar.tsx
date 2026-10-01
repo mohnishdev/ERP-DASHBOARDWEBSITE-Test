@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { authStorageKey, useAppDispatch, useAppState, useNavigate } from "@/context/AppContext";
 import { viewLabels } from "@/context/AppContext";
+import { dashboardDB, type AppNotification } from "@/lib/dashboard";
 
 export function Topbar() {
-  const { currentView, sidebarOpen, soundOn, theme, currentUser } = useAppState();
+  const { currentView, sidebarOpen, soundOn, theme, currentUser, DB } = useAppState();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const [panel, setPanel] = useState<"notifications" | "profile" | null>(null);
@@ -13,6 +14,23 @@ export function Topbar() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    const syncNotifications = (event: StorageEvent) => {
+      if (event.key !== "jaad_erp_state_v3") return;
+      try {
+        const saved = JSON.parse(event.newValue || "null");
+        const notifications = saved?.data?.notifications as AppNotification[] | undefined;
+        if (!Array.isArray(notifications)) return;
+        dashboardDB.notifications.splice(0, dashboardDB.notifications.length, ...notifications);
+        dispatch({ type: "SET_DB", DB: { ...dashboardDB, notifications: [...notifications] } });
+      } catch {
+        // Ignore incomplete cross-tab writes and keep the current notification list.
+      }
+    };
+    window.addEventListener("storage", syncNotifications);
+    return () => window.removeEventListener("storage", syncNotifications);
+  }, [dispatch]);
 
   const logout = () => {
     sessionStorage.removeItem(authStorageKey);
@@ -47,7 +65,7 @@ export function Topbar() {
             <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
             <path d="M10 20a2 2 0 0 0 4 0" />
           </svg>
-          <span className="badge-dot">2</span>
+          <span className="badge-dot">{DB.notifications.length || 2}</span>
         </button>
 
         <button className="icon-btn" type="button" aria-label="Toggle theme" title="Toggle theme" onClick={toggleTheme}>
@@ -67,7 +85,10 @@ export function Topbar() {
           </svg>
         </button>
       </div>
-      {panel === "notifications" && <div className="topbar-panel"><div className="topbar-panel-head"><strong>Notifications</strong><button type="button" onClick={() => setPanel(null)}>×</button></div><div className="topbar-panel-item"><span className="dot red-dot" />Vehicle KJA-441-XL maintenance is due</div><div className="topbar-panel-item"><span className="dot amber-dot" />Driver licence expiry needs review</div></div>}
+      {panel === "notifications" && <div className="topbar-panel">
+        <div className="topbar-panel-head"><strong>Notifications</strong><button type="button" onClick={() => setPanel(null)}>×</button></div>
+        {DB.notifications.length ? DB.notifications.slice(0, 10).map((notification, index) => <div className="topbar-panel-item" key={`${notification.time}-${index}`}><span className="dot red-dot" />{notification.t}<small style={{ display: "block", color: "var(--text-faint)", marginLeft: 13 }}>{notification.time}</small></div>) : <><div className="topbar-panel-item"><span className="dot red-dot" />Vehicle KJA-441-XL maintenance is due</div><div className="topbar-panel-item"><span className="dot amber-dot" />Driver licence expiry needs review</div></>}
+      </div>}
       {panel === "profile" && <div className="topbar-panel profile-panel"><div className="topbar-panel-head"><strong>My profile</strong><button type="button" onClick={() => setPanel(null)}>×</button></div><div className="profile-name">{currentUser?.name || "Admin user"}</div><div className="profile-role">{currentUser?.role || "Super Admin"}</div><div className="profile-email">{currentUser?.email || "admin@jaadlogistics.com"}</div></div>}
     </header>
   );

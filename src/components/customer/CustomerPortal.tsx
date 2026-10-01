@@ -6,7 +6,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { jsPDF } from "jspdf";
 import { authStorageKey, useAppDispatch, useAppState } from "@/context/AppContext";
-import type { Booking, Invoice, SupportChat } from "@/lib/dashboard";
+import { dashboardDB, invoiceSubtotal, invoiceVat } from "@/lib/dashboard";
+import type { Booking, Customer, Invoice, SupportChat } from "@/lib/dashboard";
 
 type CustomerView = "overview" | "shipments" | "track" | "invoices" | "profile" | "support";
 
@@ -37,6 +38,57 @@ function makeCustomerTrackingNumber(pickup: string, bookings: Booking[]) {
     return Math.max(highest, sequence);
   }, 238);
   return `JAAD/${day}${month}/${year}/${String(highestSequence + 1).padStart(5, "0")}`;
+}
+
+function evaluateCalculatorExpression(expression: string) {
+  const tokens = expression.match(/(?:\d+\.?\d*|\.\d+|[()+\-*/])/g) || [];
+  if (!tokens.length || tokens.join("") !== expression.replace(/\s/g, "")) throw new Error("Invalid expression");
+  let position = 0;
+
+  function parseFactor(): number {
+    const token = tokens[position];
+    if (token === "+" || token === "-") {
+      position += 1;
+      const value = parseFactor();
+      return token === "-" ? -value : value;
+    }
+    if (token === "(") {
+      position += 1;
+      const value = parseExpression();
+      if (tokens[position] !== ")") throw new Error("Missing closing parenthesis");
+      position += 1;
+      return value;
+    }
+    if (token && /^(?:\d+\.?\d*|\.\d+)$/.test(token)) {
+      position += 1;
+      return Number(token);
+    }
+    throw new Error("Invalid expression");
+  }
+
+  function parseTerm(): number {
+    let value = parseFactor();
+    while (tokens[position] === "*" || tokens[position] === "/") {
+      const operator = tokens[position++];
+      const next = parseFactor();
+      value = operator === "*" ? value * next : value / next;
+    }
+    return value;
+  }
+
+  function parseExpression(): number {
+    let value = parseTerm();
+    while (tokens[position] === "+" || tokens[position] === "-") {
+      const operator = tokens[position++];
+      const next = parseTerm();
+      value = operator === "+" ? value + next : value - next;
+    }
+    return value;
+  }
+
+  const result = parseExpression();
+  if (position !== tokens.length || !Number.isFinite(result)) throw new Error("Invalid expression");
+  return result;
 }
 
 function formatShipmentAddress(address?: string, city?: string, state?: string, country?: string) {
@@ -140,6 +192,73 @@ function downloadShipmentPdf(booking: Booking, events: string[][]) {
   document.save(`${booking.tracking.replace(/\//g, "-")}.pdf`);
 }
 
+function InvoiceDocument({ invoice }: { invoice: Invoice }) {
+  const paid = invoice.status === "Paid";
+  const signedLine = paid ? `Signed electronically, ${formatDate(invoice.paidDate || invoice.date)}` : "Received by";
+  return <div className="doc" style={{ position: "relative" }}>
+    <div className="doc-head">
+      <div><Image src="/legacy-assets/embedded_asset_1.png" width={305} height={201} alt="JAAD Logistics" style={{ height: 30, width: "auto" }} /></div>
+      <div className="co">JAAD Logistics Ltd<br />info@jaadlogistics.com</div>
+    </div>
+    <h2>Invoice {invoice.no}</h2>
+    <div className="doc-grid">
+      <div><div className="lbl">Billed to</div>{invoice.customer}</div>
+      <div style={{ textAlign: "right" }}><div className="lbl">Date</div>{formatDate(invoice.date)}<br /><div className="lbl" style={{ marginTop: 8 }}>Status</div>{invoice.status}</div>
+    </div>
+    <table>
+      <thead><tr><th>Description</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead>
+      <tbody>
+        {invoice.items.map((item, index) => <tr key={`${item.desc}-${index}`}><td>{item.desc}</td><td style={{ textAlign: "right" }}>{formatNaira(item.amount)}</td></tr>)}
+        <tr><td style={{ textAlign: "right" }}>Subtotal</td><td style={{ textAlign: "right" }}>{formatNaira(invoiceSubtotal(invoice.amount))}</td></tr>
+        <tr><td style={{ textAlign: "right" }}>VAT, 7.5%</td><td style={{ textAlign: "right" }}>{formatNaira(invoiceVat(invoice.amount))}</td></tr>
+        <tr className="doc-total-row"><td>Total</td><td style={{ textAlign: "right" }}>{formatNaira(invoice.amount)}</td></tr>
+      </tbody>
+    </table>
+    <div className="doc-sign"><div className="line">Prepared by</div><div className="line">{signedLine}</div></div>
+    {paid && <div className="paid-stamp">PAID</div>}
+  </div>;
+}
+
+function downloadInvoicePdf(invoice: Invoice) {
+  const document = new jsPDF({ unit: "pt", format: "a4" });
+  const margin = 48;
+  let y = 56;
+  document.setFontSize(16);
+  document.text("JAAD Logistics Ltd", margin, y);
+  y += 24;
+  document.setFontSize(13);
+  document.text(`Invoice ${invoice.no}`, margin, y);
+  y += 26;
+
+  const addRow = (label: string, amount: string) => {
+    const descriptionLines = document.splitTextToSize(label, 330) as string[];
+    const amountLines = document.splitTextToSize(amount, 140) as string[];
+    const rowHeight = Math.max(descriptionLines.length, amountLines.length) * 14;
+    if (y + rowHeight > 770) {
+      document.addPage();
+      y = 48;
+    }
+    document.setFontSize(10);
+    document.setTextColor(30);
+    document.text(descriptionLines, margin, y);
+    document.text(amountLines, 547, y, { align: "right" });
+    y += rowHeight + 8;
+  };
+
+  addRow("Billed to", invoice.customer);
+  addRow("Date", formatDate(invoice.date));
+  addRow("Status", invoice.status);
+  y += 8;
+  invoice.items.forEach((item) => addRow(item.desc, formatNaira(item.amount)));
+  y += 4;
+  addRow("Subtotal", formatNaira(invoiceSubtotal(invoice.amount)));
+  addRow("VAT, 7.5%", formatNaira(invoiceVat(invoice.amount)));
+  addRow("Total", formatNaira(invoice.amount));
+  if (invoice.status === "Paid") addRow("Payment", `PAID · Signed electronically ${formatDate(invoice.paidDate || invoice.date)}`);
+  else addRow("Received by", "____________________________");
+  document.save(`${invoice.no}.pdf`);
+}
+
 export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   const router = useRouter();
   const dispatch = useAppDispatch();
@@ -149,11 +268,21 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   const [trackingInput, setTrackingInput] = useState("");
   const [submittedTracking, setSubmittedTracking] = useState("");
   const [selectedTrackingNumber, setSelectedTrackingNumber] = useState("");
+  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [selectedShipment, setSelectedShipment] = useState<Booking | null>(null);
-  const [printBooking, setPrintBooking] = useState<Booking | null>(null);
+  const [printDocument, setPrintDocument] = useState<{ type: "shipment"; booking: Booking } | { type: "invoice"; invoice: Invoice } | null>(null);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [bookingError, setBookingError] = useState("");
   const [bookingNotice, setBookingNotice] = useState("");
+  const [profileFeedback, setProfileFeedback] = useState("");
+  const [calculatorOpen, setCalculatorOpen] = useState(false);
+  const [calculatorExpression, setCalculatorExpression] = useState("");
+  const [actualWeight, setActualWeight] = useState("0");
+  const [packageLength, setPackageLength] = useState("0");
+  const [packageWidth, setPackageWidth] = useState("0");
+  const [packageHeight, setPackageHeight] = useState("0");
+  const [volumetricDivisor, setVolumetricDivisor] = useState("6000");
+  const [chargeableWeight, setChargeableWeight] = useState("");
   const [supportChat, setSupportChat] = useState<SupportChat | null>(() => {
     const inMemoryChat = DB.chats.find((chat) => chat.visitor === customerName) || null;
     if (typeof window === "undefined") return inMemoryChat;
@@ -171,34 +300,70 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   }, [theme]);
 
   useEffect(() => {
-    if (!printBooking) return;
-    const clearPrintBooking = () => setPrintBooking(null);
-    window.addEventListener("afterprint", clearPrintBooking, { once: true });
+    if (!printDocument) return;
+    const clearPrintDocument = () => setPrintDocument(null);
+    window.addEventListener("afterprint", clearPrintDocument, { once: true });
     const frame = window.requestAnimationFrame(() => window.print());
     return () => {
       window.cancelAnimationFrame(frame);
-      window.removeEventListener("afterprint", clearPrintBooking);
+      window.removeEventListener("afterprint", clearPrintDocument);
     };
-  }, [printBooking]);
+  }, [printDocument]);
 
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null");
       const savedBookings = saved?.data?.bookings as Booking[] | undefined;
+      const savedCustomers = saved?.data?.customers as Customer[] | undefined;
       const savedInvoices = saved?.data?.invoices as Invoice[] | undefined;
-      const knownTrackingNumbers = new Set(DB.bookings.map((booking) => booking.tracking));
-      const knownInvoiceNumbers = new Set(DB.invoices.map((invoice) => invoice.no));
-      const restoredBookings = Array.isArray(savedBookings) ? savedBookings.filter((booking) => !knownTrackingNumbers.has(booking.tracking)) : [];
-      const restoredInvoices = Array.isArray(savedInvoices) ? savedInvoices.filter((invoice) => !knownInvoiceNumbers.has(invoice.no)) : [];
-      if (!restoredBookings.length && !restoredInvoices.length) return;
+      const hasSavedCustomers = Array.isArray(savedCustomers) && JSON.stringify(savedCustomers) !== JSON.stringify(DB.customers);
+      const hasSavedBookings = Array.isArray(savedBookings) && JSON.stringify(savedBookings) !== JSON.stringify(DB.bookings);
+      const hasSavedInvoices = Array.isArray(savedInvoices) && JSON.stringify(savedInvoices) !== JSON.stringify(DB.invoices);
+      if (!hasSavedCustomers && !hasSavedBookings && !hasSavedInvoices) return;
 
-      DB.bookings.push(...restoredBookings);
-      DB.invoices.push(...restoredInvoices);
-      dispatch({ type: "SET_DB", DB: { ...DB, bookings: [...DB.bookings], invoices: [...DB.invoices] } });
+      if (hasSavedCustomers) dashboardDB.customers.splice(0, dashboardDB.customers.length, ...savedCustomers);
+      if (hasSavedBookings) dashboardDB.bookings.splice(0, dashboardDB.bookings.length, ...savedBookings);
+      if (hasSavedInvoices) dashboardDB.invoices.splice(0, dashboardDB.invoices.length, ...savedInvoices);
+      dispatch({ type: "SET_DB", DB: {
+        ...DB,
+        customers: hasSavedCustomers ? savedCustomers : DB.customers,
+        bookings: hasSavedBookings ? savedBookings : DB.bookings,
+        invoices: hasSavedInvoices ? savedInvoices : DB.invoices,
+      } });
     } catch {
       // Keep the built-in sample data available if stored bookings cannot be read.
     }
   }, [DB, dispatch]);
+
+  useEffect(() => {
+    if (!authReady || currentUser?.type !== "customer" || view !== "support") return;
+
+    const syncSupportChat = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null");
+        const savedChats = saved?.data?.chats as SupportChat[] | undefined;
+        const latestChat = savedChats?.find((chat) => chat.visitor === customerName);
+        if (!latestChat) return;
+
+        setSupportChat((current) => JSON.stringify(current) === JSON.stringify(latestChat) ? current : latestChat);
+        const currentChat = dashboardDB.chats.find((chat) => chat.visitor === customerName);
+        if (JSON.stringify(currentChat) === JSON.stringify(latestChat)) return;
+        const nextChats = [...dashboardDB.chats.filter((chat) => chat.visitor !== customerName), latestChat];
+        dashboardDB.chats.splice(0, dashboardDB.chats.length, ...nextChats);
+        dispatch({ type: "SET_DB", DB: { ...dashboardDB, chats: nextChats } });
+      } catch {
+        // Ignore incomplete cross-tab writes and retry on the next poll.
+      }
+    };
+
+    syncSupportChat();
+    const interval = window.setInterval(syncSupportChat, 2500);
+    window.addEventListener("storage", syncSupportChat);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("storage", syncSupportChat);
+    };
+  }, [authReady, currentUser?.type, customerName, dispatch, view]);
 
   useEffect(() => {
     if (authReady && currentUser?.type !== "customer") {
@@ -210,6 +375,17 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
 
   const signedInCustomerName = customerName;
   const customerRecord = DB.customers.find((customer) => customer.name === signedInCustomerName);
+  const profileContactParts = (customerRecord?.contact.split(",")[0] || "").trim().split(/\s+/).filter(Boolean);
+  const profilePhone = customerRecord?.contact.match(/(?:\+?\d[\d\s-]{6,})/)?.[0].trim() || "";
+  const customerProfile = customerRecord?.profile || {
+    firstName: profileContactParts[0] || "",
+    lastName: profileContactParts.slice(1).join(" "),
+    companyName: customerRecord?.name || signedInCustomerName,
+    phone: profilePhone,
+    email: customerRecord?.email || "",
+    companyAddress: customerRecord?.address || "",
+    linkedin: customerRecord?.linkedin || "",
+  };
   const bookings = DB.bookings.filter((booking) => booking.customer === signedInCustomerName);
   const trackingMatches = submittedTracking
     ? bookings.filter((booking) => booking.tracking.toLowerCase().includes(submittedTracking.toLowerCase()))
@@ -235,10 +411,93 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   const initials = signedInCustomerName.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase();
 
   const toggleTheme = () => dispatch({ type: "SET_THEME", theme: theme === "light" ? "dark" : "light" });
+  const pressCalculatorKey = (key: string) => {
+    if (key === "C") {
+      setCalculatorExpression("");
+      return;
+    }
+    if (key === "=") {
+      setCalculatorExpression((current) => {
+        try {
+          return String(evaluateCalculatorExpression(current));
+        } catch {
+          return "Error";
+        }
+      });
+      return;
+    }
+    setCalculatorExpression((current) => `${current === "Error" ? "" : current}${key}`);
+  };
+
+  const calculateChargeableWeight = () => {
+    const actual = Number(actualWeight) || 0;
+    const volume = ((Number(packageLength) || 0) * (Number(packageWidth) || 0) * (Number(packageHeight) || 0)) / (Number(volumetricDivisor) || 6000);
+    setChargeableWeight(`Volumetric weight: ${volume.toFixed(2)} kg · Chargeable weight: ${Math.max(actual, volume).toFixed(2)} kg`);
+  };
+
   const logout = () => {
     sessionStorage.removeItem(authStorageKey);
     dispatch({ type: "SET_CURRENT_USER", user: null });
     router.replace("/");
+  };
+
+  const saveCustomerProfile = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!customerRecord) return;
+
+    const form = new FormData(event.currentTarget);
+    const value = (name: string) => String(form.get(name) || "").trim();
+    const firstName = value("firstName");
+    const lastName = value("lastName");
+    const companyName = value("companyName");
+    if (!firstName || !lastName || !companyName) {
+      setProfileFeedback("First name, last name, and company name are required.");
+      return;
+    }
+
+    const oldName = customerRecord.name;
+    const profile = {
+      firstName,
+      lastName,
+      companyName,
+      phone: value("phone"),
+      email: value("email"),
+      companyAddress: value("companyAddress"),
+      linkedin: value("linkedin"),
+    };
+    const renameCompany = companyName !== oldName;
+    const nextCustomers = DB.customers.map((customer) => customer.name === oldName ? {
+      ...customer,
+      name: companyName,
+      profile,
+      email: profile.email,
+      address: profile.companyAddress,
+      linkedin: profile.linkedin,
+      contact: `${firstName} ${lastName}, ${profile.phone}`.replace(/, $/, ""),
+    } : customer);
+    const nextBookings = DB.bookings.map((booking) => renameCompany && booking.customer === oldName ? { ...booking, customer: companyName } : booking);
+    const nextInvoices = DB.invoices.map((invoice) => renameCompany && invoice.customer === oldName ? { ...invoice, customer: companyName } : invoice);
+    if (renameCompany) {
+      const updatedUser = { ...currentUser, name: companyName };
+      sessionStorage.setItem(authStorageKey, JSON.stringify(updatedUser));
+      dispatch({ type: "SET_CURRENT_USER", user: updatedUser });
+    }
+
+    dashboardDB.customers.splice(0, dashboardDB.customers.length, ...nextCustomers);
+    dashboardDB.bookings.splice(0, dashboardDB.bookings.length, ...nextBookings);
+    dashboardDB.invoices.splice(0, dashboardDB.invoices.length, ...nextInvoices);
+    dispatch({ type: "SET_DB", DB: { ...DB, customers: nextCustomers, bookings: nextBookings, invoices: nextInvoices } });
+    try {
+      const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null") || {};
+      localStorage.setItem("jaad_erp_state_v3", JSON.stringify({
+        ...saved,
+        savedAt: Date.now(),
+        data: { ...(saved.data || {}), customers: nextCustomers, bookings: nextBookings, invoices: nextInvoices },
+      }));
+    } catch {
+      // Keep the updated profile in shared app state if storage is unavailable.
+    }
+    setProfileFeedback("Profile updated in your account and JAAD ERP.");
   };
 
   const issueShipmentInvoice = (booking: Booking) => {
@@ -368,14 +627,19 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
         };
 
     const nextChats = [...chatsToUpdate.filter((chat) => chat.visitor !== signedInCustomerName), nextChat];
-    const nextDB = { ...DB, chats: nextChats };
+    const storedNotifications = storedState.data?.notifications;
+    const notifications = Array.isArray(storedNotifications) ? storedNotifications : DB.notifications;
+    const nextNotifications = [{ t: `New message from ${signedInCustomerName} in Support`, time: "just now" }, ...notifications];
+    dashboardDB.chats.splice(0, dashboardDB.chats.length, ...nextChats);
+    dashboardDB.notifications.splice(0, dashboardDB.notifications.length, ...nextNotifications);
+    const nextDB = { ...DB, chats: nextChats, notifications: nextNotifications };
     dispatch({ type: "SET_DB", DB: nextDB });
     setSupportChat(nextChat);
     try {
       localStorage.setItem("jaad_erp_state_v3", JSON.stringify({
         ...storedState,
         savedAt: Date.now(),
-        data: { ...(storedState.data || {}), chats: nextChats },
+        data: { ...(storedState.data || {}), chats: nextChats, notifications: nextNotifications },
       }));
     } catch {
       // Keep the in-memory thread available for this session if storage is unavailable.
@@ -444,6 +708,13 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
             </svg>
             <span>Support</span>
           </Link>
+          <button className="nav-item" type="button" onClick={() => { setCalculatorOpen(true); setSidebarOpen(false); }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="5" y="3" width="14" height="18" rx="2" />
+              <path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 18h.01M12 18h.01M16 18h.01" />
+            </svg>
+            <span>Calculator</span>
+          </button>
         </nav>
         <div className="sidebar-foot">JAAD Logistics Ltd<br />Lagos, Nigeria · est. 2018<br />Prototype build, sample data only<br /><b style={{ color: "var(--red)" }}>Build 17</b></div>
       </aside>
@@ -459,6 +730,12 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
             <div className="crumb">{view === "overview" ? "Overview" : view === "shipments" ? "My Shipments" : view === "track" ? "Track a shipment" : view === "invoices" ? "Invoices" : view === "profile" ? "Profile" : "Support"}</div>
           </div>
           <div className="topbar-right">
+            <button className="icon-btn" type="button" title="Calculator" aria-label="Open calculator" onClick={() => setCalculatorOpen(true)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="5" y="3" width="14" height="18" rx="2" />
+                <path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 18h.01M12 18h.01M16 18h.01" />
+              </svg>
+            </button>
             <button className="icon-btn" type="button" title="Toggle theme" aria-label="Toggle theme" onClick={toggleTheme}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="4" />
@@ -496,28 +773,21 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
               </form>
             </div>
           </> : view === "profile" ? <>
-            <div className="view-head"><div><h1>Profile</h1></div></div>
+            <div className="view-head"><div><h1>Profile</h1><p>Your account information is synced with JAAD ERP Customer Management.</p></div></div>
             <div className="card">
-              <div className="card-title" style={{ marginBottom: 12 }}>Photo</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 18 }}>
-                <div className="avatar" style={{ width: 56, height: 56, fontSize: 16 }}>{initials}</div>
-                <input type="file" accept="image/*" aria-label="Choose profile photo" />
-              </div>
-              <div className="card-title" style={{ marginBottom: 12 }}>Details</div>
-              <div className="grid g-2">
-                <div className="field"><label htmlFor="customer-profile-company">Company</label><input id="customer-profile-company" defaultValue={customerName} /></div>
-                <div className="field"><label htmlFor="customer-profile-contact">Contact</label><input id="customer-profile-contact" defaultValue={customerRecord?.contact || ""} /></div>
-              </div>
-              <button className="btn btn-primary" type="button" style={{ marginTop: 6 }}>Save changes</button>
-              <div style={{ borderTop: "1px solid var(--border)", margin: "20px 0 16px", paddingTop: 16 }}>
-                <div className="card-title" style={{ marginBottom: 12 }}>Change password</div>
+              <form onSubmit={saveCustomerProfile}>
                 <div className="grid g-2">
-                  <div className="field" style={{ gridColumn: "1 / -1" }}><label htmlFor="customer-current-password">Current password</label><input id="customer-current-password" type="password" /></div>
-                  <div className="field"><label htmlFor="customer-new-password">New password</label><input id="customer-new-password" type="password" /></div>
-                  <div className="field"><label htmlFor="customer-confirm-password">Confirm new password</label><input id="customer-confirm-password" type="password" /></div>
+                  <div className="field"><label htmlFor="customer-profile-first">First Name</label><input id="customer-profile-first" name="firstName" defaultValue={customerProfile.firstName} required /></div>
+                  <div className="field"><label htmlFor="customer-profile-last">Last Name</label><input id="customer-profile-last" name="lastName" defaultValue={customerProfile.lastName} required /></div>
+                  <div className="field"><label htmlFor="customer-profile-company">Company Name</label><input id="customer-profile-company" name="companyName" defaultValue={customerProfile.companyName} required /></div>
+                  <div className="field"><label htmlFor="customer-profile-phone">Phone Number</label><input id="customer-profile-phone" name="phone" type="tel" defaultValue={customerProfile.phone} /></div>
+                  <div className="field"><label htmlFor="customer-profile-email">Email</label><input id="customer-profile-email" name="email" type="email" defaultValue={customerProfile.email} /></div>
+                  <div className="field"><label htmlFor="customer-profile-linkedin">LinkedIn</label><input id="customer-profile-linkedin" name="linkedin" type="url" placeholder="https://linkedin.com/in/..." defaultValue={customerProfile.linkedin} /></div>
+                  <div className="field" style={{ gridColumn: "1 / -1" }}><label htmlFor="customer-profile-address">Company Address</label><textarea id="customer-profile-address" name="companyAddress" rows={3} defaultValue={customerProfile.companyAddress} /></div>
                 </div>
-                <button className="btn btn-primary" type="button" style={{ marginTop: 6 }}>Update password</button>
-              </div>
+                {profileFeedback && <div role="status" style={{ margin: "6px 0 12px", color: profileFeedback.startsWith("Profile updated") ? "var(--green)" : "var(--red)", fontSize: 12.5, fontWeight: 600 }}>{profileFeedback}</div>}
+                <button className="btn btn-primary" type="submit">Save changes</button>
+              </form>
             </div>
           </> : view === "invoices" ? <>
             <div className="view-head">
@@ -540,7 +810,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
                   <tbody>
                     {invoices.map((invoice) => (
                       <tr id={`invoice-${invoice.no}`} key={invoice.no}>
-                        <td className="mono">{invoice.no}</td>
+                        <td><button className="mono link-cell" type="button" style={{ background: "none", border: 0, padding: 0 }} onClick={() => setSelectedInvoice(invoice)}>{invoice.no}</button></td>
                         <td>{formatDate(invoice.date)}</td>
                         <td>{formatNaira(invoice.amount)}</td>
                         <td><span className={`badge ${invoice.status === "Paid" ? "st-connected" : invoice.status === "Overdue" ? "b-red" : "b-gray"}`}><span className="dot" />{invoice.status}</span></td>
@@ -577,7 +847,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
                 </div>}
                 {trackedBooking && <div style={{ display: "flex", justifyContent: "flex-end", gap: 9, marginTop: 12 }}>
                   <button className="btn" type="button" onClick={() => downloadShipmentPdf(trackedBooking, trackingEvents)}>Download PDF</button>
-                  <button className="btn btn-primary" type="button" onClick={() => setPrintBooking(trackedBooking)}>Print</button>
+                  <button className="btn btn-primary" type="button" onClick={() => setPrintDocument({ type: "shipment", booking: trackedBooking })}>Print</button>
                 </div>}
               </div>
             </div>
@@ -719,11 +989,53 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
             {!selectedShipmentInvoice && <button className="btn" type="button" onClick={() => issueShipmentInvoice(selectedShipment)}>Issue invoice</button>}
             <button className="btn" type="button" onClick={() => setSelectedShipment(null)}>Close</button>
             <button className="btn" type="button" onClick={() => downloadShipmentPdf(selectedShipment, selectedShipmentEvents)}>Download PDF</button>
-            <button className="btn btn-primary" type="button" onClick={() => setPrintBooking(selectedShipment)}>Print</button>
+            <button className="btn btn-primary" type="button" onClick={() => setPrintDocument({ type: "shipment", booking: selectedShipment })}>Print</button>
           </div>
         </div>
       </div>}
-      {printBooking && <div id="print-area" aria-hidden="true"><ShipmentDocument booking={printBooking} events={DB.trackingEvents[printBooking.id] || []} invoice={DB.invoices.find((invoice) => invoice.customer === customerName && invoice.linkedShipment === printBooking.tracking)} /></div>}
+      {selectedInvoice && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setSelectedInvoice(null); }}>
+        <div className="modal doc-modal" role="dialog" aria-modal="true" aria-label={`Invoice ${selectedInvoice.no}`}>
+          <div className="modal-head">
+            <h3>{selectedInvoice.no}{selectedInvoice.posted === false && <> <span className="badge b-amber">Draft</span></>}</h3>
+            <button className="x-btn" type="button" aria-label="Close invoice details" onClick={() => setSelectedInvoice(null)}>×</button>
+          </div>
+          <div className="modal-body"><InvoiceDocument invoice={selectedInvoice} /></div>
+          <div className="modal-foot">
+            <button className="btn" type="button" onClick={() => setSelectedInvoice(null)}>Close</button>
+            <button className="btn" type="button" onClick={() => downloadInvoicePdf(selectedInvoice)}>Download PDF</button>
+            <button className="btn btn-primary" type="button" onClick={() => setPrintDocument({ type: "invoice", invoice: selectedInvoice })}>Print</button>
+          </div>
+        </div>
+      </div>}
+      {printDocument && <div id="print-area" aria-hidden="true">{printDocument.type === "invoice"
+        ? <InvoiceDocument invoice={printDocument.invoice} />
+        : <ShipmentDocument booking={printDocument.booking} events={DB.trackingEvents[printDocument.booking.id] || []} invoice={DB.invoices.find((invoice) => invoice.customer === customerName && invoice.linkedShipment === printDocument.booking.tracking)} />}</div>}
+      {calculatorOpen && <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setCalculatorOpen(false); }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="customer-calculator-title">
+          <div className="modal-head">
+            <h3 id="customer-calculator-title">Calculator</h3>
+            <button className="x-btn" type="button" aria-label="Close calculator" onClick={() => setCalculatorOpen(false)}>×</button>
+          </div>
+          <div className="modal-body">
+            <output aria-label="Calculator display" style={{ display: "block", background: "var(--sidebar-bg)", color: "#fff", fontSize: 24, textAlign: "right", padding: 14, borderRadius: 8, marginBottom: 10, overflowX: "auto", minHeight: 56 }}>{calculatorExpression || "0"}</output>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8 }}>
+              {["C", "(", ")", "/", "7", "8", "9", "*", "4", "5", "6", "-", "1", "2", "3", "+", "0", ".", "="].map((key) => <button className={`btn${key === "=" ? " btn-primary" : ""}`} style={{ justifyContent: "center", padding: "12px 0" }} type="button" key={key} aria-label={key === "*" ? "Multiply" : key === "/" ? "Divide" : key === "=" ? "Calculate" : key === "C" ? "Clear" : key} onClick={() => pressCalculatorKey(key)}>{key === "*" ? "×" : key === "/" ? "÷" : key}</button>)}
+            </div>
+            <div style={{ marginTop: 18, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+              <div className="card-title">Chargeable weight calculator<small>Calculate actual versus volumetric weight.</small></div>
+              <div className="grid g-3" style={{ marginTop: 12 }}>
+                <div className="field"><label htmlFor="calc-actual-weight">Actual weight (kg)</label><input id="calc-actual-weight" type="number" min="0" step="any" value={actualWeight} onChange={(event) => setActualWeight(event.target.value)} /></div>
+                <div className="field"><label htmlFor="calc-length">Length (cm)</label><input id="calc-length" type="number" min="0" step="any" value={packageLength} onChange={(event) => setPackageLength(event.target.value)} /></div>
+                <div className="field"><label htmlFor="calc-width">Width (cm)</label><input id="calc-width" type="number" min="0" step="any" value={packageWidth} onChange={(event) => setPackageWidth(event.target.value)} /></div>
+                <div className="field"><label htmlFor="calc-height">Height (cm)</label><input id="calc-height" type="number" min="0" step="any" value={packageHeight} onChange={(event) => setPackageHeight(event.target.value)} /></div>
+                <div className="field"><label htmlFor="calc-divisor">Volumetric divisor</label><select id="calc-divisor" value={volumetricDivisor} onChange={(event) => setVolumetricDivisor(event.target.value)}><option value="5000">5000</option><option value="6000">6000</option></select></div>
+              </div>
+              <button className="btn btn-primary" type="button" onClick={calculateChargeableWeight}>Calculate weight</button>
+              {chargeableWeight && <div role="status" style={{ marginTop: 10, fontWeight: 700 }}>{chargeableWeight}</div>}
+            </div>
+          </div>
+        </div>
+      </div>}
     </div>
   );
 }
