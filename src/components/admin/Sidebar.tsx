@@ -163,13 +163,16 @@ function iconMarkup(icon: NavItem["icon"]) {
 }
 
 export function Sidebar({ onOpenCalculator }: { onOpenCalculator: () => void }) {
-  const { currentView, currentTab, sidebarOpen, DB, previewRole } = useAppState();
+  const { currentView, currentTab, sidebarOpen, DB, previewRole, currentUser } = useAppState();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const [supportMenuOpen, setSupportMenuOpen] = useState(false);
   const needsAttention = DB.chats.filter((chat) => chat.status === "Open" || chat.status === "Pending").length;
   const selectedRole = previewRole ? DB.roles.find((role) => role.role === previewRole) : undefined;
-  const visibleGroups = selectedRole ? navGroups.map((group) => ({ ...group, items: group.items.filter((item) => selectedRole.perms.includes(item.key)) })).filter((group) => group.items.length) : navGroups;
+  const allowedModules = selectedRole?.perms ?? currentUser?.modules;
+  const visibleGroups = allowedModules === "all" || !allowedModules
+    ? navGroups
+    : navGroups.map((group) => ({ ...group, items: group.items.filter((item) => allowedModules.includes(item.key)) })).filter((group) => group.items.length);
 
   const exitRolePreview = () => {
     dispatch({ type: "SET_PREVIEW_ROLE", role: null });
@@ -179,7 +182,7 @@ export function Sidebar({ onOpenCalculator }: { onOpenCalculator: () => void }) 
 
   return (
     <aside id="sidebar" className={sidebarOpen ? "open" : undefined}>
-      {selectedRole && <div className="preview-banner"><span>Previewing as {selectedRole.role}</span><button type="button" onClick={exitRolePreview}>Exit preview</button></div>}
+      {(selectedRole || (currentUser && Array.isArray(currentUser.modules))) && <div className="preview-banner"><span>{selectedRole ? `Previewing as ${selectedRole.role}` : `${currentUser?.role} access`}</span>{selectedRole && <button type="button" onClick={exitRolePreview}>Exit preview</button>}</div>}
       <div className="brand">
         <img src="/legacy-assets/embedded_asset_1.png" alt="JAAD Logistics" />
         <div>
@@ -215,7 +218,7 @@ export function Sidebar({ onOpenCalculator }: { onOpenCalculator: () => void }) 
               </a>
               )
             ))}
-            {group.label === "Finance & People" && (!selectedRole || selectedRole.perms.includes("calculator")) && <button className="nav-item" type="button" onClick={onOpenCalculator}>{iconMarkup("calc")}<span>Calculator</span></button>}
+            {group.label === "Finance & People" && (allowedModules === "all" || allowedModules?.includes("calculator")) && <button className="nav-item" type="button" onClick={onOpenCalculator}>{iconMarkup("calc")}<span>Calculator</span></button>}
           </div>
         ))}
       </nav>

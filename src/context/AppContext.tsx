@@ -3,6 +3,10 @@
 import { createContext, useContext, useEffect, useReducer, type Dispatch, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { DB } from "@/data/db";
+import { loadAppUser } from "@/lib/supabase/account";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
+import { persistSimulationState, restoreSimulationState } from "@/lib/simulation-store";
 
 type CurrentUser = {
   email: string;
@@ -102,11 +106,77 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
   useEffect(() => {
+    let active = true;
+    let unsubscribe = () => {};
+
+    const restoreLocalSession = () => {
+      try {
+        const saved = sessionStorage.getItem(authStorageKey);
+        const user = saved ? JSON.parse(saved) as CurrentUser : null;
+        const allowedLocalUser = user?.type === "customer" || (isSimulationMode() && user?.type === "admin");
+        dispatch({ type: "SET_CURRENT_USER", user: allowedLocalUser ? user : null });
+      } catch {
+        dispatch({ type: "SET_CURRENT_USER", user: null });
+      }
+    };
+
+    if (isSimulationMode()) {
+      restoreSimulationState(DB);
+      restoreLocalSession();
+      dispatch({ type: "SET_AUTH_READY", ready: true });
+      const persist = () => persistSimulationState(DB);
+      const onStorage = (event: StorageEvent) => {
+        if (event.key !== "jaad_erp_simulation_v2" || !event.newValue) return;
+        if (restoreSimulationState(DB)) dispatch({ type: "SET_DB", DB: { ...DB } });
+      };
+      const timer = window.setInterval(persist, 1200);
+      window.addEventListener("beforeunload", persist);
+      window.addEventListener("storage", onStorage);
+      return () => {
+        active = false;
+        window.clearInterval(timer);
+        window.removeEventListener("beforeunload", persist);
+        window.removeEventListener("storage", onStorage);
+      };
+    }
+
     try {
-      const saved = sessionStorage.getItem(authStorageKey);
-      if (saved) dispatch({ type: "SET_CURRENT_USER", user: JSON.parse(saved) });
-    } catch { /* A missing or invalid mock session is treated as logged out. */ }
-    dispatch({ type: "SET_AUTH_READY", ready: true });
+      const supabase = createClient();
+      const hydrate = async (userId?: string, email = "") => {
+        let user: CurrentUser = null;
+        if (userId) {
+          try {
+            user = await loadAppUser(supabase, userId, email);
+          } catch {
+            user = null;
+          }
+        }
+        if (!active) return;
+        if (user) {
+          sessionStorage.removeItem(authStorageKey);
+          dispatch({ type: "SET_CURRENT_USER", user });
+        } else {
+          restoreLocalSession();
+        }
+        dispatch({ type: "SET_AUTH_READY", ready: true });
+      };
+
+      void supabase.auth.getUser().then(({ data: { user } }) => hydrate(user?.id, user?.email || ""));
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        window.setTimeout(() => {
+          void hydrate(session?.user.id, session?.user.email || "");
+        }, 0);
+      });
+      unsubscribe = () => subscription.unsubscribe();
+    } catch {
+      restoreLocalSession();
+      dispatch({ type: "SET_AUTH_READY", ready: true });
+    }
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   const navigate = (view: string) => {

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { authStorageKey, useAppDispatch, useAppState, useNavigate } from "@/context/AppContext";
 import { viewLabels } from "@/context/AppContext";
 import { dashboardDB, type AppNotification } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
 
 export function Topbar({ onOpenCalculator }: { onOpenCalculator: () => void }) {
   const { currentView, sidebarOpen, soundOn, theme, currentUser, DB } = useAppState();
@@ -32,7 +33,12 @@ export function Topbar({ onOpenCalculator }: { onOpenCalculator: () => void }) {
     return () => window.removeEventListener("storage", syncNotifications);
   }, [dispatch]);
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await createClient().auth.signOut();
+    } catch {
+      // Clear the local UI session even when Supabase is unavailable.
+    }
     sessionStorage.removeItem(authStorageKey);
     dispatch({ type: "SET_CURRENT_USER", user: null });
     navigate("dashboard");

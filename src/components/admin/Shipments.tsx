@@ -2,7 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { jsPDF } from "jspdf";
-import { dashboardDB, fmtNaira, type Booking, type Invoice } from "@/lib/dashboard";
+import { dashboardDB, fmtNaira, type Booking, type Invoice, type Manifest, type ProofOfDelivery, type ShipmentReturn } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
+import { persistSimulationState } from "@/lib/simulation-store";
 
 const shipmentTabs = [
   ["bookings", "Bookings"],
@@ -25,7 +28,7 @@ const shipmentStatusColors: Record<string, string> = {
 
 const bookingCustomers = ["EricBoss Furnitures", "Arbico PLC", "Doyetek Industries", "Sahara Textiles"];
 const bookingCities = ["Lagos", "Abuja", "Port Harcourt", "Kano", "Ibadan", "Benin City", "Enugu", "Kaduna", "Onitsha", "Aba"];
-let nextShipmentSequence = 239;
+let simulationTrackingSequence = 239;
 
 function formatDate(date: string) {
   return new Date(date).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
@@ -35,36 +38,35 @@ function pad(value: number, length: number) {
   return String(value).padStart(length, "0");
 }
 
-function bookingTrackingNumber(date: string) {
+function simulationTrackingNumber(date: string) {
   const pickupDate = new Date(`${date}T00:00:00`);
-  const tracking = `JAAD/${pad(pickupDate.getDate(), 2)}${pad(pickupDate.getMonth() + 1, 2)}/${pickupDate.getFullYear()}/${pad(nextShipmentSequence, 5)}`;
-  nextShipmentSequence += 1;
-  return tracking;
-}
-
-function bookingId() {
-  return `s_${Math.random().toString(36).slice(2, 9)}`;
+  const highestSequence = dashboardDB.bookings.reduce((highest, booking) => {
+    const sequence = Number(booking.tracking.split("/").pop()) || 0;
+    return Math.max(highest, sequence);
+  }, simulationTrackingSequence - 1);
+  simulationTrackingSequence = highestSequence + 2;
+  return `JAAD/${pad(pickupDate.getDate(), 2)}${pad(pickupDate.getMonth() + 1, 2)}/${pickupDate.getFullYear()}/${pad(highestSequence + 1, 5)}`;
 }
 
 function typeBadge(type: string) {
   return <span className="badge b-gray">{type}</span>;
 }
 
-function statusSelect(status: string) {
+function statusSelect(status: string, onChange: (status: string) => void) {
   const color = shipmentStatusColors[status] || "#888";
-  return <select className="switch-select" defaultValue={status} style={{ backgroundColor: `${color}22`, color }} aria-label={`Status: ${status}`}>
+  return <select className="switch-select" value={status} onChange={(event) => onChange(event.target.value)} style={{ backgroundColor: `${color}22`, color }} aria-label={`Status: ${status}`}>
     {shipmentStatuses.map((option) => <option value={option} key={option}>{option}</option>)}
   </select>;
 }
 
-function ShipmentRow({ booking, onGenerateInvoice }: { booking: Booking; onGenerateInvoice: (booking: Booking) => void }) {
+function ShipmentRow({ booking, onGenerateInvoice, onStatusChange }: { booking: Booking; onGenerateInvoice: (booking: Booking) => void; onStatusChange: (booking: Booking, status: string) => void }) {
   return <tr>
     <td><span className="mono link-cell">{booking.tracking}</span></td>
     <td>{booking.customer}</td>
     <td>{booking.origin} → {booking.destination}</td>
     <td>{typeBadge(booking.type)}</td>
     <td>{formatDate(booking.pickup)}</td>
-    <td>{statusSelect(booking.status)}</td>
+    <td>{statusSelect(booking.status, (status) => onStatusChange(booking, status))}</td>
     <td><button className="btn btn-sm btn-primary" onClick={() => onGenerateInvoice(booking)}>Generate invoice</button></td>
   </tr>;
 }
@@ -153,20 +155,6 @@ export function TrackingView() {
   </>;
 }
 
-type Manifest = {
-  no: string;
-  date: string;
-  driver: string;
-  vehicle: string;
-  route: string;
-  shipments: string[];
-};
-
-const mockManifests: Manifest[] = [
-  { no: "MNF/JAAD/2907/2026/004", date: "2026-07-29", driver: "Musa Bello", vehicle: "ABJ-220-KT", route: "Lagos to Port Harcourt", shipments: ["JAAD/2907/2026/00232"] },
-  { no: "MNF/JAAD/3007/2026/005", date: "2026-07-30", driver: "Chidi Okafor", vehicle: "KJA-441-XL", route: "Lagos to Kano", shipments: ["JAAD/3007/2026/00233"] },
-];
-
 function downloadManifestPdf(manifest: Manifest) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   doc.setFontSize(16);
@@ -232,48 +220,65 @@ export function ManifestsView({ manifests, onOpenManifest }: { manifests: Manife
   </div>;
 }
 
-export function PODView() {
+export function PODView({ onSave }: { onSave: (booking: Booking, receivedBy: string, notes: string) => void }) {
+  const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const delivered = dashboardDB.bookings.filter((booking) => booking.status === "Delivered");
 
-  return <div className="table-wrap">
-    {delivered.length ? <table>
-      <thead><tr><th>Tracking no.</th><th>Customer</th><th>Delivered</th><th>Action</th></tr></thead>
-      <tbody>{delivered.map((booking) => <tr key={booking.id}>
-        <td><span className="mono">{booking.tracking}</span></td>
-        <td>{booking.customer}</td>
-        <td>{formatDate(booking.pickup)}</td>
-        <td><button className="btn btn-sm">View POD</button></td>
-      </tr>)}</tbody>
-    </table> : <div className="empty">Nothing to show yet</div>}
-  </div>;
+  return <>
+    <div className="table-wrap">
+      {delivered.length ? <table>
+        <thead><tr><th>Tracking no.</th><th>Customer</th><th>Delivered</th><th>Recipient</th><th>Action</th></tr></thead>
+        <tbody>{delivered.map((booking) => {
+          const pod = dashboardDB.proofOfDelivery[booking.id];
+          return <tr key={booking.id}>
+            <td><span className="mono">{booking.tracking}</span></td>
+            <td>{booking.customer}</td>
+            <td>{pod?.deliveredAt ? formatDate(pod.deliveredAt.slice(0, 10)) : formatDate(booking.pickup)}</td>
+            <td>{pod?.receivedBy || "Not recorded"}</td>
+            <td><button className="btn btn-sm" onClick={() => setSelectedBooking(booking)}>{pod ? "Edit POD" : "Record POD"}</button></td>
+          </tr>;
+        })}</tbody>
+      </table> : <div className="empty">No delivered shipments need proof of delivery</div>}
+    </div>
+    {selectedBooking && <PODForm booking={selectedBooking} initial={dashboardDB.proofOfDelivery[selectedBooking.id]} onSave={(receivedBy, notes) => { onSave(selectedBooking, receivedBy, notes); setSelectedBooking(null); }} onClose={() => setSelectedBooking(null)} />}
+  </>;
 }
 
-const mockReturns = [
-  { tracking: "JAAD/1507/2026/00201", customer: "Ubuntu Foods Ltd", reason: "Wrong item received", status: "Resolved" },
-  { tracking: "JAAD/2007/2026/00214", customer: "Nova Retail Group", reason: "Damaged in transit", status: "Open" },
-];
+function PODForm({ booking, initial, onSave, onClose }: { booking: Booking; initial?: ProofOfDelivery; onSave: (receivedBy: string, notes: string) => void; onClose: () => void }) {
+  const [receivedBy, setReceivedBy] = useState(initial?.receivedBy ?? "");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
+  return <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal"><div className="modal-head"><h3>Proof of delivery · {booking.tracking}</h3><button className="x-btn" onClick={onClose}>×</button></div><div className="modal-body"><div className="field"><label>Received by</label><input value={receivedBy} onChange={(event) => setReceivedBy(event.target.value)} autoFocus /></div><div className="field"><label>Notes</label><textarea value={notes} onChange={(event) => setNotes(event.target.value)} /></div></div><div className="modal-foot"><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!receivedBy.trim()} onClick={() => onSave(receivedBy.trim(), notes.trim())}>Save POD</button></div></div></div>;
+}
 
-function returnStatusSelect(status: string) {
-  return <select className={`switch-select st-${status.toLowerCase()}`} defaultValue={status} aria-label={`Return status: ${status}`}>
-    {['Open', 'Resolved'].map((option) => <option value={option} key={option}>{option}</option>)}
+function returnStatusSelect(status: ShipmentReturn["status"], onChange: (status: ShipmentReturn["status"]) => void) {
+  return <select className={`switch-select st-${status.toLowerCase()}`} value={status} onChange={(event) => onChange(event.target.value as ShipmentReturn["status"])} aria-label={`Return status: ${status}`}>
+    {(["Open", "Resolved"] as const).map((option) => <option value={option} key={option}>{option}</option>)}
   </select>;
 }
 
-export function ReturnsView() {
-  return <div className="table-wrap">
-    <table>
-      <thead><tr><th>Tracking no.</th><th>Customer</th><th>Reason</th><th>Status</th></tr></thead>
-      <tbody>{mockReturns.map((returnItem) => <tr key={returnItem.tracking}>
-        <td><span className="mono link-cell">{returnItem.tracking}</span></td>
-        <td>{returnItem.customer}</td>
-        <td>{returnItem.reason}</td>
-        <td>{returnStatusSelect(returnItem.status)}</td>
-      </tr>)}</tbody>
-    </table>
-  </div>;
+export function ReturnsView({ onStatusChange, onCreate }: { onStatusChange: (returnItem: ShipmentReturn, status: ShipmentReturn["status"]) => void; onCreate: (booking: Booking, reason: string) => void }) {
+  const [selectedBookingId, setSelectedBookingId] = useState("");
+  const [reason, setReason] = useState("");
+  const eligibleBookings = dashboardDB.bookings.filter((booking) => !dashboardDB.returns.some((returnItem) => returnItem.tracking === booking.tracking));
+
+  return <>
+    <div className="panel" style={{ padding: 16, marginBottom: 14 }}><div className="form-section-title">Log a return</div><div className="field-row"><div className="field"><label>Shipment</label><select value={selectedBookingId} onChange={(event) => setSelectedBookingId(event.target.value)}><option value="">Choose a shipment</option>{eligibleBookings.map((booking) => <option key={booking.id} value={booking.id}>{booking.tracking} · {booking.customer}</option>)}</select></div><div className="field"><label>Reason</label><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason for return" /></div></div><button className="btn btn-primary" disabled={!selectedBookingId || !reason.trim()} onClick={() => { const booking = eligibleBookings.find((item) => item.id === selectedBookingId); if (booking) onCreate(booking, reason.trim()); setSelectedBookingId(""); setReason(""); }}>Log return</button></div>
+    <div className="table-wrap">
+      {dashboardDB.returns.length ? <table>
+        <thead><tr><th>Tracking no.</th><th>Customer</th><th>Reason</th><th>Status</th><th>Logged</th></tr></thead>
+        <tbody>{dashboardDB.returns.map((returnItem) => <tr key={returnItem.id}>
+          <td><span className="mono">{returnItem.tracking}</span></td>
+          <td>{returnItem.customer}</td>
+          <td>{returnItem.reason}</td>
+          <td>{returnStatusSelect(returnItem.status, (status) => onStatusChange(returnItem, status))}</td>
+          <td>{formatDate(returnItem.created)}</td>
+        </tr>)}</tbody>
+      </table> : <div className="empty">No returns recorded</div>}
+    </div>
+  </>;
 }
 
-function BookingsView({ onGenerateInvoice }: { onGenerateInvoice: (booking: Booking) => void }) {
+function BookingsView({ onGenerateInvoice, onStatusChange }: { onGenerateInvoice: (booking: Booking) => void; onStatusChange: (booking: Booking, status: string) => void }) {
   return <>
     <div className="card" style={{ marginBottom: 16 }}>
       <div className="card-title" style={{ marginBottom: 10 }}>Look up a shipment</div>
@@ -290,7 +295,7 @@ function BookingsView({ onGenerateInvoice }: { onGenerateInvoice: (booking: Book
     <div className="table-wrap">
       <table>
         <thead><tr><th>Tracking no.</th><th>Customer</th><th>Route</th><th>Type</th><th>Pickup</th><th>Status</th><th>Invoice</th></tr></thead>
-        <tbody>{dashboardDB.bookings.map((booking) => <ShipmentRow booking={booking} onGenerateInvoice={onGenerateInvoice} key={booking.id} />)}</tbody>
+        <tbody>{dashboardDB.bookings.map((booking) => <ShipmentRow booking={booking} onGenerateInvoice={onGenerateInvoice} onStatusChange={onStatusChange} key={booking.id} />)}</tbody>
       </table>
     </div>
   </>;
@@ -382,25 +387,96 @@ function manifestNumber(sequence: number, date: string) {
 }
 
 export function Shipments() {
+    const [savingBooking, setSavingBooking] = useState(false);
   const [activeTab, setActiveTab] = useState<(typeof shipmentTabs)[number][0]>("bookings");
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [bookingForm, setBookingForm] = useState<BookingForm>(initialBookingForm);
   const [manifestModalOpen, setManifestModalOpen] = useState(false);
   const [manifestForm, setManifestForm] = useState<ManifestForm>(initialManifestForm);
-  const [manifests, setManifests] = useState<Manifest[]>(mockManifests);
-  const [nextManifestSequence, setNextManifestSequence] = useState(6);
+  const [manifests, setManifests] = useState<Manifest[]>(dashboardDB.manifests);
+  const [nextManifestSequence, setNextManifestSequence] = useState(() => dashboardDB.manifests.reduce((highest, manifest) => Math.max(highest, Number(manifest.no.split("/").pop()) || 0), 5) + 1);
   const [invoicePreview, setInvoicePreview] = useState<Invoice | null>(null);
   const [manifestPreview, setManifestPreview] = useState<Manifest | null>(null);
   const [, setDispatchRevision] = useState(0);
   const [toastMessage, setToastMessage] = useState("");
+  const [shipmentDataState, setShipmentDataState] = useState<"loading" | "connected" | "demo">("loading");
+  const [shipmentDataError, setShipmentDataError] = useState("");
   const views = {
-    bookings: <BookingsView onGenerateInvoice={openInvoiceForBooking} />,
+    bookings: <BookingsView onGenerateInvoice={openInvoiceForBooking} onStatusChange={updateBookingStatus} />,
     dispatch: <DispatchView onAdvance={advanceDispatch} onMove={moveDispatch} />,
     tracking: <TrackingView />,
     manifests: <ManifestsView manifests={manifests} onOpenManifest={setManifestPreview} />,
-    pod: <PODView />,
-    returns: <ReturnsView />,
+    pod: <PODView onSave={saveProofOfDelivery} />,
+    returns: <ReturnsView onStatusChange={updateReturnStatus} onCreate={createReturnRecord} />,
   };
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadShipmentData() {
+      try {
+        const supabase = createClient();
+        const [{ data: bookings, error: bookingsError }, { data: events, error: eventsError }] = await Promise.all([
+          supabase
+            .from("bookings")
+            .select("id, tracking_no, customer_name, origin, destination, type, status, pickup_date, weight, declared_value, notes, sender_name, sender_phone, sender_address, sender_email, receiver_name, receiver_phone, receiver_address, vehicle_number, driver_name, driver_phone, checked_by, dispatched_by, declared_value_customs, insurance_amount, freight_terms")
+            .order("pickup_date", { ascending: false }),
+          supabase
+            .from("tracking_events")
+            .select("booking_id, event_time, description")
+            .order("event_time", { ascending: true }),
+        ]);
+
+        if (bookingsError) throw bookingsError;
+        if (eventsError) throw eventsError;
+        if (!active) return;
+
+        const liveBookings: Booking[] = (bookings ?? []).map((booking) => ({
+          id: booking.id,
+          tracking: booking.tracking_no,
+          customer: booking.customer_name,
+          origin: booking.origin,
+          destination: booking.destination,
+          type: booking.type,
+          status: booking.status,
+          pickup: booking.pickup_date,
+          weight: booking.weight ?? "",
+          value: Number(booking.declared_value) || 0,
+          notes: booking.notes ?? "",
+          senderName: booking.sender_name ?? undefined,
+          senderPhone: booking.sender_phone ?? undefined,
+          senderAddress: booking.sender_address ?? undefined,
+          receiverName: booking.receiver_name ?? undefined,
+          receiverPhone: booking.receiver_phone ?? undefined,
+          receiverAddress: booking.receiver_address ?? undefined,
+        }));
+
+        dashboardDB.bookings.splice(0, dashboardDB.bookings.length, ...liveBookings);
+        const trackingEvents = dashboardDB.trackingEvents as Record<string, string[][]>;
+        Object.keys(trackingEvents).forEach((bookingId) => delete trackingEvents[bookingId]);
+        (events ?? []).forEach((event) => {
+          const eventTime = new Date(event.event_time);
+          const formattedTime = Number.isNaN(eventTime.getTime())
+            ? event.event_time
+            : eventTime.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
+          (trackingEvents[event.booking_id] ??= []).push([formattedTime, event.description]);
+        });
+
+        setShipmentDataError("");
+        setShipmentDataState("connected");
+        setDispatchRevision((revision) => revision + 1);
+      } catch (error) {
+        if (!active) return;
+        setShipmentDataError(error instanceof Error ? error.message : "Supabase shipment data could not be loaded.");
+        setShipmentDataState("demo");
+      }
+    }
+
+    void loadShipmentData();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!toastMessage) return;
@@ -422,24 +498,76 @@ export function Shipments() {
     setBookingForm((current) => ({ ...current, [field]: value }));
   };
 
-  const submitBooking = () => {
-    const tracking = bookingTrackingNumber(bookingForm.pickup || "2026-08-02");
-    dashboardDB.bookings.unshift({
-      id: bookingId(),
-      tracking,
-      customer: bookingForm.customer,
-      origin: bookingForm.origin,
-      destination: bookingForm.destination,
-      type: bookingForm.type,
-      status: "Pending",
-      pickup: bookingForm.pickup || "2026-08-02",
-      weight: bookingForm.weight || "n/a",
-      value: Number(bookingForm.value) || 0,
-      notes: "",
-    });
-    setActiveTab("bookings");
-    closeBookingModal();
-    setToastMessage(`Booking created: ${tracking}`);
+  const submitBooking = async () => {
+    setSavingBooking(true);
+    try {
+      if (isSimulationMode()) {
+        const pickup = bookingForm.pickup || new Date().toISOString().slice(0, 10);
+        const booking: Booking = {
+          id: `sim-shipment-${Date.now()}`,
+          tracking: simulationTrackingNumber(pickup),
+          customer: bookingForm.customer,
+          origin: bookingForm.origin,
+          destination: bookingForm.destination,
+          type: bookingForm.type,
+          status: "Pending",
+          pickup,
+          weight: bookingForm.weight || "",
+          value: Number(bookingForm.value) || 0,
+          notes: "",
+        };
+        dashboardDB.bookings.unshift(booking);
+        const trackingEvents = dashboardDB.trackingEvents as Record<string, string[][]>;
+        trackingEvents[booking.id] = [[new Date().toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }), "Booking created in simulation"]];
+        persistSimulationState(dashboardDB);
+        setDispatchRevision((revision) => revision + 1);
+        setActiveTab("bookings");
+        closeBookingModal();
+        setToastMessage(`Simulation: booking created ${booking.tracking}`);
+        return;
+      }
+
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("bookings")
+        .insert({
+          customer_name: bookingForm.customer,
+          origin: bookingForm.origin,
+          destination: bookingForm.destination,
+          type: bookingForm.type,
+          status: "Pending",
+          pickup_date: bookingForm.pickup || new Date().toISOString().slice(0, 10),
+          weight: bookingForm.weight || null,
+          declared_value: Number(bookingForm.value) || 0,
+          notes: null,
+        })
+        .select("id, tracking_no, customer_name, origin, destination, type, status, pickup_date, weight, declared_value, notes")
+        .single();
+
+      if (error) throw error;
+      const booking: Booking = {
+        id: data.id,
+        tracking: data.tracking_no,
+        customer: data.customer_name,
+        origin: data.origin,
+        destination: data.destination,
+        type: data.type,
+        status: data.status,
+        pickup: data.pickup_date,
+        weight: data.weight ?? "",
+        value: Number(data.declared_value) || 0,
+        notes: data.notes ?? "",
+      };
+      dashboardDB.bookings.unshift(booking);
+      setDispatchRevision((revision) => revision + 1);
+      setActiveTab("bookings");
+      closeBookingModal();
+      setToastMessage(`Booking created: ${booking.tracking}`);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? `Booking not saved: ${error.message}` : "Booking could not be saved.");
+    } finally {
+      setSavingBooking(false);
+    }
   };
 
   function openInvoiceForBooking(booking: Booking) {
@@ -465,15 +593,56 @@ export function Shipments() {
 
   function advanceDispatch(booking: Booking) {
     const nextStage = nextDispatchStage(booking.status as typeof dispatchStages[number]);
-    booking.status = nextStage || booking.status;
-    setDispatchRevision((current) => current + 1);
-    setToastMessage(`${booking.tracking} moved to ${booking.status}`);
+    if (nextStage) void updateBookingStatus(booking, nextStage);
+  }
+  async function updateBookingStatus(booking: Booking, status: string) {
+    try {
+      if (isSimulationMode()) {
+        booking.status = status;
+        const trackingEvents = dashboardDB.trackingEvents as Record<string, string[][]>;
+        (trackingEvents[booking.id] ??= []).push([
+          new Date().toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
+          `Status changed to ${status} in simulation`,
+        ]);
+        persistSimulationState(dashboardDB);
+        setDispatchRevision((revision) => revision + 1);
+        setToastMessage(`Simulation: ${booking.tracking} moved to ${status}`);
+        return;
+      }
+
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("bookings")
+        .update({ status })
+        .eq("id", booking.id)
+        .select("id")
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error("No shipment was updated. Check your access and try again.");
+
+      booking.status = status;
+      const { error: eventError } = await supabase.from("tracking_events").insert({
+        booking_id: booking.id,
+        description: `Status changed to ${status}`,
+      });
+      if (!eventError) {
+        const trackingEvents = dashboardDB.trackingEvents as Record<string, string[][]>;
+        (trackingEvents[booking.id] ??= []).push([
+          new Date().toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }),
+          `Status changed to ${status}`,
+        ]);
+      }
+      setDispatchRevision((revision) => revision + 1);
+      setToastMessage(eventError
+        ? `${booking.tracking} moved to ${status}; the tracking event could not be recorded.`
+        : `${booking.tracking} moved to ${status}`);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? `Shipment update failed: ${error.message}` : "Shipment update failed.");
+    }
   }
 
   function moveDispatch(booking: Booking, stage: typeof dispatchStages[number]) {
-    booking.status = stage;
-    setDispatchRevision((current) => current + 1);
-    setToastMessage(`${booking.tracking} moved to ${stage}`);
+    void updateBookingStatus(booking, stage);
   }
 
   const downloadInvoice = (invoice: Invoice) => {
@@ -502,17 +671,79 @@ export function Shipments() {
       setToastMessage("Select at least one shipment");
       return;
     }
-    const date = "2026-08-02";
-    const no = manifestNumber(nextManifestSequence, date);
-    setManifests((current) => [{ no, date, driver: manifestForm.driver, vehicle: manifestForm.vehicle, route: manifestForm.route || "Unspecified route", shipments: manifestForm.shipments }, ...current]);
-    dashboardDB.bookings.forEach((booking) => {
-      if (manifestForm.shipments.includes(booking.tracking)) booking.status = "In Transit";
-    });
-    setNextManifestSequence((current) => current + 1);
-    closeManifestModal();
-    setActiveTab("manifests");
-    setToastMessage(`Manifest generated: ${no}`);
+    if (isSimulationMode()) {
+      const date = new Date().toISOString().slice(0, 10);
+      const no = manifestNumber(nextManifestSequence, date);
+      const manifest: Manifest = {
+        no,
+        date,
+        driver: manifestForm.driver,
+        vehicle: manifestForm.vehicle,
+        route: manifestForm.route || "Unspecified route",
+        shipments: [...manifestForm.shipments],
+      };
+      dashboardDB.manifests.unshift(manifest);
+      manifest.shipments.forEach((tracking) => {
+        const booking = dashboardDB.bookings.find((item) => item.tracking === tracking);
+        if (booking && booking.status === "Assigned") void updateBookingStatus(booking, "In Transit");
+      });
+      setManifests([...dashboardDB.manifests]);
+      persistSimulationState(dashboardDB);
+      setNextManifestSequence((current) => current + 1);
+      closeManifestModal();
+      setActiveTab("manifests");
+      setToastMessage(`Simulation: manifest generated ${no}`);
+      return;
+    }
+    setToastMessage("Manifest creation is not connected to the live backend yet.");
   };
+
+  function saveProofOfDelivery(booking: Booking, receivedBy: string, notes: string) {
+    if (!isSimulationMode()) {
+      setToastMessage("Proof of delivery is not connected to the live backend yet.");
+      return;
+    }
+    const now = new Date().toISOString();
+    dashboardDB.proofOfDelivery[booking.id] = {
+      bookingId: booking.id,
+      receivedBy,
+      recordedBy: "Simulation staff",
+      deliveredAt: now,
+      notes,
+    };
+    persistSimulationState(dashboardDB);
+    setDispatchRevision((revision) => revision + 1);
+    setToastMessage(`Simulation: proof of delivery saved for ${booking.tracking}`);
+  }
+
+  function createReturnRecord(booking: Booking, reason: string) {
+    if (!isSimulationMode()) {
+      setToastMessage("Return logging is not connected to the live backend yet.");
+      return;
+    }
+    dashboardDB.returns.unshift({
+      id: `sim-return-${Date.now()}`,
+      tracking: booking.tracking,
+      customer: booking.customer,
+      reason,
+      status: "Open",
+      created: new Date().toISOString().slice(0, 10),
+    });
+    persistSimulationState(dashboardDB);
+    setDispatchRevision((revision) => revision + 1);
+    setToastMessage(`Simulation: return logged for ${booking.tracking}`);
+  }
+
+  function updateReturnStatus(returnItem: ShipmentReturn, status: ShipmentReturn["status"]) {
+    if (!isSimulationMode()) {
+      setToastMessage("Return updates are not connected to the live backend yet.");
+      return;
+    }
+    returnItem.status = status;
+    persistSimulationState(dashboardDB);
+    setDispatchRevision((revision) => revision + 1);
+    setToastMessage(`Simulation: return ${returnItem.tracking} set to ${status}`);
+  }
 
   return <>
     <div className="view-head">
@@ -521,11 +752,13 @@ export function Shipments() {
         <p>Bookings, dispatch, live tracking and manifests.</p>
       </div>
       <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+        {shipmentDataState !== "loading" && <>
         {activeTab === "bookings" && <>
           <button className="btn" onClick={exportBookings}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 19h16" /></svg> Export CSV</button>
           <button className="btn btn-primary" onClick={() => setBookingModalOpen(true)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg> New booking</button>
         </>}
         {activeTab === "manifests" && <button className="btn btn-primary" onClick={() => setManifestModalOpen(true)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg> Create manifest</button>}
+        </>}
       </div>
     </div>
 
@@ -533,7 +766,14 @@ export function Shipments() {
       {shipmentTabs.map(([key, label]) => <div className={`tab${activeTab === key ? " active" : ""}`} key={key} onClick={() => setActiveTab(key)}>{label}</div>)}
     </div>
 
-    {views[activeTab]}
+    {shipmentDataState === "loading" ? (
+      <div className="empty" role="status">Loading shipment data...</div>
+    ) : (
+      <>
+        {shipmentDataState === "demo" && <div className="note" role="status">{isSimulationMode() ? "Simulation mode: shipment changes stay in local demo data." : `Showing demo shipment data. Live data could not be loaded: ${shipmentDataError}`}</div>}
+        {views[activeTab]}
+      </>
+    )}
 
     {bookingModalOpen && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeBookingModal(); }}>
       <div className="modal">
@@ -545,7 +785,7 @@ export function Shipments() {
           <div className="field-row"><div className="field"><label>Weight</label><input placeholder="e.g. 2.4t" value={bookingForm.weight} onChange={(event) => updateBookingForm("weight", event.target.value)} /></div><div className="field"><label>Declared value, NGN</label><input type="number" placeholder="e.g. 500000" value={bookingForm.value} onChange={(event) => updateBookingForm("value", event.target.value)} /></div></div>
           <div className="note">Tracking number is generated automatically from the pickup date.</div>
         </div>
-        <div className="modal-foot"><button className="btn" onClick={closeBookingModal}>Cancel</button><button className="btn btn-primary" onClick={submitBooking}>Create booking</button></div>
+        <div className="modal-foot"><button className="btn" onClick={closeBookingModal} disabled={savingBooking}>Cancel</button><button className="btn btn-primary" onClick={submitBooking} disabled={savingBooking}>{savingBooking ? "Saving..." : "Create booking"}</button></div>
       </div>
     </div>}
     {manifestModalOpen && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeManifestModal(); }}>

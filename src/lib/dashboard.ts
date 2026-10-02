@@ -24,6 +24,32 @@ export type Booking = {
   receiverCountry?: string;
 };
 
+export type Manifest = {
+  no: string;
+  date: string;
+  driver: string;
+  vehicle: string;
+  route: string;
+  shipments: string[];
+};
+
+export type ShipmentReturn = {
+  id: string;
+  tracking: string;
+  customer: string;
+  reason: string;
+  status: "Open" | "Resolved";
+  created: string;
+};
+
+export type ProofOfDelivery = {
+  bookingId: string;
+  receivedBy: string;
+  recordedBy: string;
+  deliveredAt: string;
+  notes: string;
+};
+
 export type Invoice = {
   no: string;
   customer: string;
@@ -167,9 +193,12 @@ export type Lead = {
   requirements: string;
   value: number;
   notesLog: { t: string; by: string; text: string }[];
+  linkedCustomerId?: string;
+  linkedCustomer?: string;
 };
 
 export type Customer = {
+  id?: string;
   name: string;
   type: string;
   contact: string;
@@ -250,6 +279,15 @@ export const dashboardDB = {
     { id: "s7", tracking: "JAAD/0208/2026/00238", customer: "Zenith Manufacturing", origin: "Lagos", destination: "Enugu", type: "Road", status: "Exception", pickup: "2026-08-02", weight: "1.4t", value: 410000, notes: "Delivery address incomplete, awaiting confirmation." },
     { id: "s8", tracking: "JAAD/2607/2026/00229", customer: "Ubuntu Foods Ltd", origin: "Lagos", destination: "Aba", type: "Road", status: "Cancelled", pickup: "2026-07-26", weight: "1.1t", value: 260000, notes: "Customer cancelled before pickup, no charge." },
   ] as Booking[],
+  manifests: [
+    { no: "MNF/JAAD/2907/2026/004", date: "2026-07-29", driver: "Musa Bello", vehicle: "ABJ-220-KT", route: "Lagos to Port Harcourt", shipments: ["JAAD/2907/2026/00232"] },
+    { no: "MNF/JAAD/3007/2026/005", date: "2026-07-30", driver: "Chidi Okafor", vehicle: "KJA-441-XL", route: "Lagos to Kano", shipments: ["JAAD/3007/2026/00233"] },
+  ] as Manifest[],
+  returns: [
+    { id: "ret-demo-1", tracking: "JAAD/1507/2026/00201", customer: "Ubuntu Foods Ltd", reason: "Wrong item received", status: "Resolved", created: "2026-07-15" },
+    { id: "ret-demo-2", tracking: "JAAD/2007/2026/00214", customer: "Nova Retail Group", reason: "Damaged in transit", status: "Open", created: "2026-07-20" },
+  ] as ShipmentReturn[],
+  proofOfDelivery: {} as Record<string, ProofOfDelivery>,
   customers: [
     { name: "EricBoss Furnitures", type: "B2B", contact: "John, 0810 612 8219", credit: 3000000, balance: 0, since: "2024", status: "Active" },
     { name: "Arbico PLC", type: "B2B", contact: "Franco, Ikoyi Lagos", credit: 8000000, balance: 1200000, since: "2022", status: "Active" },

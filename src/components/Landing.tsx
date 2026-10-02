@@ -7,8 +7,6 @@ import { useAppDispatch, useNavigate } from "@/context/AppContext";
 type Account = { email: string; pass: string; name: string; role: string; modules: "all" | string[]; type: "admin" | "customer" };
 
 const defaultAccounts: Account[] = [
-  { email: "admin@jaadlogistics.com", pass: "admin123", name: "Joseph Abidoye", role: "Super Admin", modules: "all", type: "admin" },
-  { email: "support@jaadlogistics.com", pass: "support123", name: "Support Agent", role: "Customer Support", modules: ["dashboard", "support"], type: "admin" },
   { email: "customer@jaadlogistics.com", pass: "customer123", name: "EricBoss Furnitures", role: "Customer", modules: [], type: "customer" },
 ];
 
@@ -35,12 +33,13 @@ export function Landing() {
 
   const submitLogin = (event: React.FormEvent<HTMLFormElement>, admin: boolean) => {
     event.preventDefault();
+    if (admin) { setError("Use the staff sign-in page for admin access."); return; }
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") || "").trim().toLowerCase();
     const password = String(form.get("password") || "");
     const consent = form.get("consent");
-    const account = readAccounts().find((candidate) => candidate.email === email && candidate.pass === password);
-    if (!consent || !account || (admin && account.type !== "admin")) { setError("Incorrect email or password."); return; }
+    const account = readAccounts().find((candidate) => candidate.email === email && candidate.pass === password && candidate.type === "customer");
+    if (!consent || !account) { setError("Incorrect email or password."); return; }
     startVerification(account, false);
   };
 

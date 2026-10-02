@@ -8,8 +8,6 @@ export type Account = {
 };
 
 export const defaultAccounts: Account[] = [
-  { email: "admin@jaadlogistics.com", pass: "admin123", name: "Joseph Abidoye", role: "Super Admin", modules: "all", type: "admin" },
-  { email: "support@jaadlogistics.com", pass: "support123", name: "Support Agent", role: "Customer Support", modules: ["dashboard", "support"], type: "admin" },
   { email: "customer@jaadlogistics.com", pass: "customer123", name: "EricBoss Furnitures", role: "Customer", modules: [], type: "customer" },
 ];
 
