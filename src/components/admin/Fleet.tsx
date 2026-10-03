@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AdminTable } from "@/components/admin/AdminTable";
 import { dashboardDB, fmtNaira, type FleetMaintenanceRecord, type FleetInsurancePolicy } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
 import { isSimulationMode } from "@/lib/supabase/mode";
 import { persistSimulationState } from "@/lib/simulation-store";
 
@@ -51,16 +52,50 @@ function statusSelect(value: string, plate: string, onChange: (plate: string, st
 export function Fleet() {
   const [activeTab, setActiveTab] = useState<(typeof fleetTabs)[number][0]>("vehicles");
   const [fleet, setFleet] = useState(dashboardDB.fleet);
+  const [maintenanceRecords, setMaintenanceRecords] = useState(dashboardDB.fleetMaintenance);
+  const [insurancePolicies, setInsurancePolicies] = useState(dashboardDB.fleetInsurance);
   const [formKind, setFormKind] = useState<"vehicle" | "maintenance" | "insurance" | null>(null);
   const [toast, setToast] = useState("");
 
-  const updateFleetStatus = (plate: string, status: string) => {
-    if (!isSimulationMode()) {
-      setToast("Fleet status writes are not connected to the live backend yet.");
-      return;
+  const loadFleetData = async () => {
+    if (isSimulationMode()) return;
+    try {
+      const supabase = createClient();
+      const [{ data: vehicles, error: vehicleError }, { data: drivers, error: driverError }, { data: maintenance, error: maintenanceError }, { data: insurance, error: insuranceError }] = await Promise.all([
+        supabase.from("fleet_vehicles").select("id, plate, type, status, driver_id, next_service_date, fuel_liters, insurer").order("plate"),
+        supabase.from("drivers").select("id, name"),
+        supabase.from("fleet_maintenance").select("id, vehicle_id, description, cost, service_date, status"),
+        supabase.from("fleet_insurance").select("id, vehicle_id, insurer, policy_number, coverage_type, premium, start_date, expiry_date"),
+      ]);
+      const queryError = vehicleError || driverError || maintenanceError || insuranceError;
+      if (queryError) throw queryError;
+      const driversById = new Map((drivers || []).map((driver) => [driver.id, driver.name]));
+      const vehiclesById = new Map((vehicles || []).map((vehicle) => [vehicle.id, vehicle.plate]));
+      setFleet((vehicles || []).map((vehicle) => ({ plate: vehicle.plate, type: vehicle.type, status: vehicle.status, driver: driversById.get(vehicle.driver_id) || "Unassigned", service: vehicle.next_service_date || "", fuelL: Number(vehicle.fuel_liters) || 0, insurer: vehicle.insurer || "—" })));
+      setMaintenanceRecords((maintenance || []).map((record) => ({ id: record.id, plate: vehiclesById.get(record.vehicle_id) || "Unknown", description: record.description, cost: Number(record.cost) || 0, date: record.service_date, status: record.status as FleetMaintenanceRecord["status"] })));
+      setInsurancePolicies((insurance || []).map((policy) => ({ id: policy.id, plate: vehiclesById.get(policy.vehicle_id) || "Unknown", insurer: policy.insurer, policyNumber: policy.policy_number, coverage: policy.coverage_type || "", premium: Number(policy.premium) || 0, startDate: policy.start_date || "", expiryDate: policy.expiry_date || "" })));
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load fleet data");
     }
+  };
+
+  useEffect(() => { queueMicrotask(() => { void loadFleetData(); }); }, []);
+
+  const updateFleetStatus = async (plate: string, status: string) => {
     const found = fleet.find((vehicle) => vehicle.plate === plate);
     if (!found) return;
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { error } = await supabase.from("fleet_vehicles").update({ status }).eq("plate", plate);
+        if (error) throw error;
+        await loadFleetData();
+        setToast(`${plate} set to ${status}`);
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Could not update vehicle status");
+      }
+      return;
+    }
     found.status = status;
     persistSimulationState(dashboardDB);
     setFleet([...fleet]);
@@ -70,11 +105,42 @@ export function Fleet() {
 
   const saveFleetForm = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!isSimulationMode() || !formKind) {
-      setToast("Fleet writes are available in simulation mode only.");
+    if (!formKind) return;
+    const form = new FormData(event.currentTarget);
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const plate = String(form.get("plate") || "").trim().toUpperCase();
+          const driverName = String(form.get("driver") || "");
+          const { data: vehicle, error: vehicleError } = await supabase.from("fleet_vehicles").select("id").eq("plate", plate).maybeSingle();
+          if (formKind !== "vehicle" && (vehicleError || !vehicle)) throw vehicleError || new Error("Choose a valid vehicle");
+
+          if (formKind === "vehicle") {
+            let driverId: string | null = null;
+            if (driverName && driverName !== "Unassigned") {
+              const { data: driver, error } = await supabase.from("drivers").select("id").eq("name", driverName).maybeSingle();
+              if (error) throw error;
+              driverId = driver?.id || null;
+            }
+            const { error } = await supabase.from("fleet_vehicles").insert({ plate, type: String(form.get("type") || "Truck"), status: String(form.get("status") || "Available"), driver_id: driverId, next_service_date: String(form.get("service") || "") || null, fuel_liters: Number(form.get("fuelL")) || 0, insurer: String(form.get("insurer") || "") || null });
+            if (error) throw error;
+          } else if (formKind === "maintenance") {
+            const { error } = await supabase.from("fleet_maintenance").insert({ vehicle_id: vehicle?.id, description: String(form.get("description") || "").trim(), cost: Number(form.get("cost")) || 0, service_date: String(form.get("date") || new Date().toISOString().slice(0, 10)), status: String(form.get("status") || "Scheduled") });
+            if (error) throw error;
+          } else {
+            const { error } = await supabase.from("fleet_insurance").insert({ vehicle_id: vehicle?.id, insurer: String(form.get("insurer") || "").trim(), policy_number: String(form.get("policyNumber") || "").trim(), coverage_type: String(form.get("coverage") || "Comprehensive"), premium: Number(form.get("premium")) || 0, start_date: String(form.get("startDate") || "") || null, expiry_date: String(form.get("expiryDate") || "") || null });
+            if (error) throw error;
+          }
+          await loadFleetData();
+          setFormKind(null);
+          setToast("Fleet record saved");
+        } catch (error) {
+          setToast(error instanceof Error ? error.message : "Could not save fleet record");
+        }
+      })();
       return;
     }
-    const form = new FormData(event.currentTarget);
     if (formKind === "vehicle") {
       const plate = String(form.get("plate") || "").trim().toUpperCase();
       if (!plate || dashboardDB.fleet.some((vehicle) => vehicle.plate === plate)) {
@@ -148,7 +214,7 @@ export function Fleet() {
             { key: "date", label: "Service date", render: (record) => formatDateShort(record.date) },
             { key: "status", label: "Status", render: (record) => statusBadge(record.status) },
           ]}
-          data={dashboardDB.fleetMaintenance}
+          data={maintenanceRecords}
         />
       );
     }
@@ -176,7 +242,7 @@ export function Fleet() {
           { key: "premium", label: "Premium", render: (policy) => fmtNaira(policy.premium) },
           { key: "expiryDate", label: "Expiry", render: (policy) => formatDateShort(policy.expiryDate) },
         ]}
-        data={dashboardDB.fleetInsurance}
+        data={insurancePolicies}
       />
     );
   };

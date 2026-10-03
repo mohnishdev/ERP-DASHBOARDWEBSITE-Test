@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AdminTable } from "@/components/admin/AdminTable";
 import { dashboardDB } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
 import { isSimulationMode } from "@/lib/supabase/mode";
 import { persistSimulationState } from "@/lib/simulation-store";
 
@@ -37,18 +38,40 @@ export function Warehouse() {
   const [selectedSku, setSelectedSku] = useState("");
   const [toast, setToast] = useState("");
 
+  const loadInventory = async () => {
+    if (isSimulationMode()) return;
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.from("inventory_items").select("id, sku, name, qty, reorder_level, location, status").order("sku");
+      if (error) throw error;
+      setInventory((data || []).map((item) => ({ sku: item.sku, name: item.name, qty: item.qty, reorder: item.reorder_level, loc: item.location || "", status: item.status })));
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load inventory");
+    }
+  };
+
+  useEffect(() => { queueMicrotask(() => { void loadInventory(); }); }, []);
+
   const closeModal = () => {
     setModal(null);
     setSelectedSku("");
   };
 
-  const updateStockStatus = (sku: string, status: string) => {
-    if (!isSimulationMode()) {
-      setToast("Inventory writes are not connected to the live backend yet.");
-      return;
-    }
+  const updateStockStatus = async (sku: string, status: string) => {
     const item = inventory.find((entry) => entry.sku === sku);
     if (!item) return;
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { error } = await supabase.from("inventory_items").update({ status }).eq("sku", sku);
+        if (error) throw error;
+        await loadInventory();
+        setToast(`${sku} set to ${status}`);
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Could not update stock status");
+      }
+      return;
+    }
     item.status = status;
     persistSimulationState(dashboardDB);
     setInventory([...inventory]);
@@ -58,12 +81,40 @@ export function Warehouse() {
 
   const saveInventoryForm = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!isSimulationMode() || !modal) {
-      setToast("Inventory writes are available in simulation mode only.");
-      return;
-    }
+    if (!modal) return;
 
     const form = new FormData(event.currentTarget);
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          if (modal === "item") {
+            const sku = String(form.get("sku") || "").trim().toUpperCase();
+            const qty = Number(form.get("qty"));
+            const reorder = Number(form.get("reorder"));
+            const { error } = await supabase.from("inventory_items").insert({ sku, name: String(form.get("name") || "").trim(), qty, reorder_level: reorder, location: String(form.get("loc") || "").trim(), status: qty <= reorder ? "Low stock" : "In stock" });
+            if (error) throw error;
+          } else {
+            const item = inventory.find((entry) => entry.sku === selectedSku);
+            if (!item) return;
+            const adjustment = Number(form.get("adjustment"));
+            const adjustedQty = item.qty + adjustment;
+            if (!Number.isInteger(adjustment) || adjustment === 0 || adjustedQty < 0) {
+              setToast("Enter a non-zero whole-number adjustment that does not reduce stock below zero.");
+              return;
+            }
+            const { error } = await supabase.from("inventory_items").update({ qty: adjustedQty, status: adjustedQty <= item.reorder ? "Low stock" : "In stock" }).eq("sku", selectedSku);
+            if (error) throw error;
+          }
+          await loadInventory();
+          closeModal();
+          setToast("Inventory saved");
+        } catch (error) {
+          setToast(error instanceof Error ? error.message : "Could not save inventory");
+        }
+      })();
+      return;
+    }
     if (modal === "item") {
       const sku = String(form.get("sku") || "").trim().toUpperCase();
       const name = String(form.get("name") || "").trim();

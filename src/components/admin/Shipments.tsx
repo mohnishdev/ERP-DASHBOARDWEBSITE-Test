@@ -416,7 +416,7 @@ export function Shipments() {
     async function loadShipmentData() {
       try {
         const supabase = createClient();
-        const [{ data: bookings, error: bookingsError }, { data: events, error: eventsError }] = await Promise.all([
+        const [bookingResult, eventResult, manifestResult, manifestShipmentResult, returnResult, podResult, driverResult, vehicleResult] = await Promise.all([
           supabase
             .from("bookings")
             .select("id, tracking_no, customer_name, origin, destination, type, status, pickup_date, weight, declared_value, notes, sender_name, sender_phone, sender_address, sender_email, receiver_name, receiver_phone, receiver_address, vehicle_number, driver_name, driver_phone, checked_by, dispatched_by, declared_value_customs, insurance_amount, freight_terms")
@@ -425,13 +425,20 @@ export function Shipments() {
             .from("tracking_events")
             .select("booking_id, event_time, description")
             .order("event_time", { ascending: true }),
+          supabase.from("manifests").select("id, manifest_no, manifest_date, driver_name, vehicle_plate, route").order("manifest_date", { ascending: false }),
+          supabase.from("manifest_shipments").select("manifest_id, booking_id"),
+          supabase.from("returns").select("id, booking_id, tracking_no, customer_name, reason, status, created_at").order("created_at", { ascending: false }),
+          supabase.from("proof_of_delivery").select("booking_id, received_by, recorded_by, delivered_at, notes"),
+          supabase.from("drivers").select("id, name, license_no, license_expiry, status, trips_completed, rating"),
+          supabase.from("fleet_vehicles").select("plate, type, status, next_service_date, fuel_liters, insurer, driver_id"),
         ]);
 
-        if (bookingsError) throw bookingsError;
-        if (eventsError) throw eventsError;
+        const queryError = bookingResult.error || eventResult.error || manifestResult.error || manifestShipmentResult.error || returnResult.error || podResult.error || driverResult.error || vehicleResult.error;
+        if (queryError) throw queryError;
         if (!active) return;
 
-        const liveBookings: Booking[] = (bookings ?? []).map((booking) => ({
+        const bookings = bookingResult.data || [];
+        const liveBookings: Booking[] = bookings.map((booking) => ({
           id: booking.id,
           tracking: booking.tracking_no,
           customer: booking.customer_name,
@@ -454,13 +461,25 @@ export function Shipments() {
         dashboardDB.bookings.splice(0, dashboardDB.bookings.length, ...liveBookings);
         const trackingEvents = dashboardDB.trackingEvents as Record<string, string[][]>;
         Object.keys(trackingEvents).forEach((bookingId) => delete trackingEvents[bookingId]);
-        (events ?? []).forEach((event) => {
+        (eventResult.data ?? []).forEach((event) => {
           const eventTime = new Date(event.event_time);
           const formattedTime = Number.isNaN(eventTime.getTime())
             ? event.event_time
             : eventTime.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
           (trackingEvents[event.booking_id] ??= []).push([formattedTime, event.description]);
         });
+
+        const bookingTracking = new Map(bookings.map((booking) => [booking.id, booking.tracking_no]));
+        const shipmentLinks = manifestShipmentResult.data || [];
+        const liveManifests = (manifestResult.data || []).map((manifest) => ({ id: manifest.id, no: manifest.manifest_no, date: manifest.manifest_date, driver: manifest.driver_name || "Unassigned", vehicle: manifest.vehicle_plate || "Unassigned", route: manifest.route || "", shipments: shipmentLinks.filter((link) => link.manifest_id === manifest.id).map((link) => bookingTracking.get(link.booking_id) || "").filter(Boolean) }));
+        dashboardDB.manifests.splice(0, dashboardDB.manifests.length, ...liveManifests);
+        setManifests(liveManifests);
+        setNextManifestSequence(liveManifests.reduce((highest, manifest) => Math.max(highest, Number(manifest.no.split("/").pop()) || 0), 0) + 1);
+        dashboardDB.returns.splice(0, dashboardDB.returns.length, ...(returnResult.data || []).map((returnItem) => ({ id: returnItem.id, tracking: returnItem.tracking_no, customer: returnItem.customer_name || "", reason: returnItem.reason || "", status: returnItem.status as ShipmentReturn["status"], created: returnItem.created_at.slice(0, 10) })));
+        dashboardDB.proofOfDelivery = Object.fromEntries((podResult.data || []).map((pod) => [pod.booking_id, { bookingId: pod.booking_id, receivedBy: pod.received_by || "", recordedBy: pod.recorded_by || "", deliveredAt: pod.delivered_at || "", notes: pod.notes || "" }]));
+        dashboardDB.drivers.splice(0, dashboardDB.drivers.length, ...(driverResult.data || []).map((driver) => ({ name: driver.name, license: driver.license_no || "", expiry: driver.license_expiry || "", trips: driver.trips_completed || 0, rating: Number(driver.rating) || 0, status: driver.status })));
+        const driverNames = new Map((driverResult.data || []).map((driver) => [driver.id, driver.name]));
+        dashboardDB.fleet.splice(0, dashboardDB.fleet.length, ...(vehicleResult.data || []).map((vehicle) => ({ plate: vehicle.plate, type: vehicle.type, status: vehicle.status, driver: driverNames.get(vehicle.driver_id) || "Unassigned", service: vehicle.next_service_date || "", fuelL: Number(vehicle.fuel_liters) || 0, insurer: vehicle.insurer || "—" })));
 
         setShipmentDataError("");
         setShipmentDataState("connected");
@@ -570,13 +589,35 @@ export function Shipments() {
     }
   };
 
-  function openInvoiceForBooking(booking: Booking) {
+  async function openInvoiceForBooking(booking: Booking) {
     const existing = dashboardDB.invoices.find((invoice) => invoice.linkedShipment === booking.tracking);
     if (existing) {
       setInvoicePreview(existing);
       return;
     }
     const sequence = dashboardDB.invoices.reduce((highest, invoice) => Math.max(highest, Number(invoice.no.replace("INV-", "")) || 0), 409) + 1;
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { data: customerRecord, error: customerError } = await supabase.from("customers").select("id").eq("name", booking.customer).maybeSingle();
+        if (customerError) throw customerError;
+        const no = `INV-${pad(sequence, 5)}`;
+        const lineDescription = `${booking.type} freight, ${booking.origin} to ${booking.destination} (${booking.tracking})`;
+        const { data: invoiceRow, error } = await supabase.from("invoices").insert({ invoice_no: no, customer_id: customerRecord?.id || null, customer_name: booking.customer, amount: booking.value, status: "Pending", invoice_date: new Date().toISOString().slice(0, 10), linked_booking_id: booking.id }).select("id").single();
+        if (error) throw error;
+        const { error: itemError } = await supabase.from("invoice_items").insert({ invoice_id: invoiceRow.id, description: lineDescription, amount: booking.value });
+        if (itemError) {
+          await supabase.from("invoices").delete().eq("id", invoiceRow.id);
+          throw itemError;
+        }
+        const invoice: Invoice = { no, customer: booking.customer, amount: booking.value, status: "Pending", date: new Date().toISOString().slice(0, 10), linkedShipment: booking.tracking, items: [{ desc: lineDescription, amount: booking.value }] };
+        dashboardDB.invoices.unshift(invoice);
+        setInvoicePreview(invoice);
+      } catch (error) {
+        setToastMessage(error instanceof Error ? `Invoice not saved: ${error.message}` : "Invoice could not be saved.");
+      }
+      return;
+    }
     const invoice: Invoice = {
       no: `INV-${pad(sequence, 5)}`,
       customer: booking.customer,
@@ -666,7 +707,7 @@ export function Shipments() {
     setManifestForm((current) => ({ ...current, [field]: value }));
   };
 
-  const submitManifest = () => {
+  const submitManifest = async () => {
     if (!manifestForm.shipments.length) {
       setToastMessage("Select at least one shipment");
       return;
@@ -695,12 +736,43 @@ export function Shipments() {
       setToastMessage(`Simulation: manifest generated ${no}`);
       return;
     }
-    setToastMessage("Manifest creation is not connected to the live backend yet.");
+    try {
+      const supabase = createClient();
+      const bookingIds = manifestForm.shipments.map((tracking) => dashboardDB.bookings.find((booking) => booking.tracking === tracking)?.id).filter((id): id is string => Boolean(id));
+      const { data, error } = await supabase.rpc("create_manifest_from_bookings", { target_booking_ids: bookingIds, target_driver_name: manifestForm.driver, target_vehicle_plate: manifestForm.vehicle, target_route: manifestForm.route });
+      if (error) throw error;
+      const manifest: Manifest = { id: data.id, no: data.manifest_no, date: data.manifest_date, driver: data.driver_name || manifestForm.driver, vehicle: data.vehicle_plate || manifestForm.vehicle, route: data.route || manifestForm.route, shipments: [...manifestForm.shipments] };
+      dashboardDB.manifests.unshift(manifest);
+      manifest.shipments.forEach((tracking) => {
+        const booking = dashboardDB.bookings.find((item) => item.tracking === tracking);
+        if (!booking) return;
+        booking.status = "In Transit";
+        (dashboardDB.trackingEvents as Record<string, string[][]>)[booking.id] = [...((dashboardDB.trackingEvents as Record<string, string[][]>)[booking.id] || []), [new Date().toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }), `Added to manifest ${manifest.no}`]];
+      });
+      setManifests([...dashboardDB.manifests]);
+      setDispatchRevision((revision) => revision + 1);
+      closeManifestModal();
+      setActiveTab("manifests");
+      setToastMessage(`Manifest generated ${manifest.no}`);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : "Manifest creation failed.");
+    }
   };
 
   function saveProofOfDelivery(booking: Booking, receivedBy: string, notes: string) {
     if (!isSimulationMode()) {
-      setToastMessage("Proof of delivery is not connected to the live backend yet.");
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.rpc("record_proof_of_delivery", { target_booking_id: booking.id, receiver_name: receivedBy, delivery_notes: notes });
+          if (error) throw error;
+          dashboardDB.proofOfDelivery[booking.id] = { bookingId: booking.id, receivedBy: data.received_by || receivedBy, recordedBy: data.recorded_by || "JAAD staff", deliveredAt: data.delivered_at || new Date().toISOString(), notes: data.notes || notes };
+          booking.status = "Delivered";
+          (dashboardDB.trackingEvents as Record<string, string[][]>)[booking.id] = [...((dashboardDB.trackingEvents as Record<string, string[][]>)[booking.id] || []), [new Date().toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }), `Delivered, received by ${receivedBy}`]];
+          setDispatchRevision((revision) => revision + 1);
+          setToastMessage(`Proof of delivery saved for ${booking.tracking}`);
+        } catch (error) { setToastMessage(error instanceof Error ? error.message : "Proof of delivery could not be saved"); }
+      })();
       return;
     }
     const now = new Date().toISOString();
@@ -718,7 +790,16 @@ export function Shipments() {
 
   function createReturnRecord(booking: Booking, reason: string) {
     if (!isSimulationMode()) {
-      setToastMessage("Return logging is not connected to the live backend yet.");
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("returns").insert({ booking_id: booking.id, tracking_no: booking.tracking, customer_name: booking.customer, reason, status: "Open" }).select("id, created_at").single();
+          if (error) throw error;
+          dashboardDB.returns.unshift({ id: data.id, tracking: booking.tracking, customer: booking.customer, reason, status: "Open", created: data.created_at.slice(0, 10) });
+          setDispatchRevision((revision) => revision + 1);
+          setToastMessage(`Return logged for ${booking.tracking}`);
+        } catch (error) { setToastMessage(error instanceof Error ? error.message : "Return could not be logged"); }
+      })();
       return;
     }
     dashboardDB.returns.unshift({
@@ -736,7 +817,16 @@ export function Shipments() {
 
   function updateReturnStatus(returnItem: ShipmentReturn, status: ShipmentReturn["status"]) {
     if (!isSimulationMode()) {
-      setToastMessage("Return updates are not connected to the live backend yet.");
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("returns").update({ status }).eq("id", returnItem.id);
+          if (error) throw error;
+          returnItem.status = status;
+          setDispatchRevision((revision) => revision + 1);
+          setToastMessage(`Return ${returnItem.tracking} set to ${status}`);
+        } catch (error) { setToastMessage(error instanceof Error ? error.message : "Return status could not be updated"); }
+      })();
       return;
     }
     returnItem.status = status;

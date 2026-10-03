@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -8,6 +8,8 @@ import { jsPDF } from "jspdf";
 import { authStorageKey, useAppDispatch, useAppState } from "@/context/AppContext";
 import { dashboardDB, invoiceSubtotal, invoiceVat } from "@/lib/dashboard";
 import type { Booking, Customer, Invoice, SupportChat } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
 
 type CustomerView = "overview" | "shipments" | "track" | "invoices" | "profile" | "support";
 
@@ -295,9 +297,68 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
     }
   });
 
+  const loadCustomerData = useCallback(async () => {
+    if (!currentUser?.id || isSimulationMode()) return;
+    const userId = currentUser.id;
+    try {
+      const supabase = createClient();
+      const { data: customerRow, error: customerError } = await supabase.from("customers").select("id, name, type, contact, credit_limit, balance, status, client_since, email, phone, address, linkedin").eq("user_id", userId).maybeSingle();
+      if (customerError) throw customerError;
+      if (!customerRow) throw new Error("Customer profile is not available for this account");
+      const [bookingResult, invoiceResult, chatResult] = await Promise.all([
+        supabase.from("bookings").select("id, tracking_no, customer_name, origin, destination, type, status, pickup_date, weight, declared_value, notes, sender_name, sender_phone, sender_address, sender_city, sender_state, sender_country, receiver_name, receiver_phone, receiver_address, receiver_city, receiver_state, receiver_country").eq("user_id", userId).order("pickup_date", { ascending: false }),
+        supabase.from("invoices").select("id, invoice_no, customer_name, amount, status, invoice_date, linked_booking_id, posted").eq("customer_id", customerRow.id).order("invoice_date", { ascending: false }),
+        supabase.from("live_chats").select("id, status, created_at").eq("user_id", userId).order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      ]);
+      if (bookingResult.error || invoiceResult.error || chatResult.error) throw bookingResult.error || invoiceResult.error || chatResult.error;
+      const bookingRows = bookingResult.data || [];
+      const invoiceRows = invoiceResult.data || [];
+      const bookingIds = bookingRows.map((booking) => booking.id);
+      const invoiceIds = invoiceRows.map((invoice) => invoice.id);
+      const [eventResult, itemResult, messageResult] = await Promise.all([
+        bookingIds.length ? supabase.from("tracking_events").select("booking_id, event_time, description").in("booking_id", bookingIds).order("event_time") : Promise.resolve({ data: [], error: null }),
+        invoiceIds.length ? supabase.from("invoice_items").select("invoice_id, description, amount").in("invoice_id", invoiceIds) : Promise.resolve({ data: [], error: null }),
+        chatResult.data ? supabase.from("live_chat_messages").select("sender, message, attachment_url, created_at").eq("chat_id", chatResult.data.id).order("created_at") : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (eventResult.error || itemResult.error || messageResult.error) throw eventResult.error || itemResult.error || messageResult.error;
+      const customer: Customer = {
+        id: customerRow.id,
+        name: customerRow.name,
+        type: customerRow.type,
+        contact: customerRow.contact || `${customerRow.name}, ${customerRow.phone || ""}`,
+        credit: Number(customerRow.credit_limit) || 0,
+        balance: Number(customerRow.balance) || 0,
+        since: customerRow.client_since || "",
+        status: customerRow.status,
+        email: customerRow.email || "",
+        address: customerRow.address || "",
+        linkedin: customerRow.linkedin || "",
+        profile: { firstName: customerRow.name.split(" ")[0] || "", lastName: customerRow.name.split(" ").slice(1).join(" "), companyName: customerRow.name, phone: customerRow.phone || "", email: customerRow.email || "", companyAddress: customerRow.address || "", linkedin: customerRow.linkedin || "" },
+      };
+      const bookings: Booking[] = bookingRows.map((row) => ({ id: row.id, tracking: row.tracking_no, customer: row.customer_name, origin: row.origin, destination: row.destination, type: row.type, status: row.status, pickup: row.pickup_date, weight: row.weight || "—", value: Number(row.declared_value) || 0, notes: row.notes || "", senderName: row.sender_name || "", senderPhone: row.sender_phone || "", senderAddress: row.sender_address || "", senderCity: row.sender_city || "", senderState: row.sender_state || "", senderCountry: row.sender_country || "", receiverName: row.receiver_name || "", receiverPhone: row.receiver_phone || "", receiverAddress: row.receiver_address || "", receiverCity: row.receiver_city || "", receiverState: row.receiver_state || "", receiverCountry: row.receiver_country || "" }));
+      const invoices: Invoice[] = invoiceRows.map((row) => ({ no: row.invoice_no, customer: row.customer_name, amount: Number(row.amount) || 0, status: row.status, date: row.invoice_date, linkedShipment: bookingRows.find((booking) => booking.id === row.linked_booking_id)?.tracking_no || null, posted: row.posted, items: (itemResult.data || []).filter((item) => item.invoice_id === row.id).map((item) => ({ desc: item.description, amount: Number(item.amount) || 0 })) }));
+      const trackingEvents = Object.fromEntries(bookingIds.map((id) => [id, (eventResult.data || []).filter((event) => event.booking_id === id).map((event) => [new Date(event.event_time).toLocaleString("en-GB"), event.description])]));
+      const chat = chatResult.data ? { id: chatResult.data.id, visitor: customer.name, status: chatResult.data.status, ticketId: null, messages: (messageResult.data || []).map((message) => ({ from: message.sender === "customer" ? "visitor" : message.sender, text: message.message || "", img: message.attachment_url || undefined, time: new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })) } satisfies SupportChat : null;
+      dashboardDB.customers.splice(0, dashboardDB.customers.length, customer);
+      dashboardDB.bookings.splice(0, dashboardDB.bookings.length, ...bookings);
+      dashboardDB.invoices.splice(0, dashboardDB.invoices.length, ...invoices);
+      dashboardDB.trackingEvents = trackingEvents;
+      if (chat) dashboardDB.chats.splice(0, dashboardDB.chats.length, chat);
+      dispatch({ type: "SET_DB", DB: { ...dashboardDB } });
+      setSupportChat(chat);
+    } catch (error) {
+      setBookingNotice(error instanceof Error ? error.message : "Could not load customer account");
+    }
+  }, [currentUser, dispatch]);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    if (!authReady || currentUser?.type !== "customer" || isSimulationMode()) return;
+    queueMicrotask(() => { void loadCustomerData(); });
+  }, [authReady, currentUser, loadCustomerData]);
 
   useEffect(() => {
     if (!printDocument) return;
@@ -311,6 +372,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   }, [printDocument]);
 
   useEffect(() => {
+    if (!isSimulationMode()) return;
     try {
       const saved = JSON.parse(localStorage.getItem("jaad_erp_state_v3") || "null");
       const savedBookings = saved?.data?.bookings as Booking[] | undefined;
@@ -336,7 +398,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
   }, [DB, dispatch]);
 
   useEffect(() => {
-    if (!authReady || currentUser?.type !== "customer" || view !== "support") return;
+    if (!authReady || currentUser?.type !== "customer" || view !== "support" || !isSimulationMode()) return;
 
     const syncSupportChat = () => {
       try {
@@ -435,7 +497,10 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
     setChargeableWeight(`Volumetric weight: ${volume.toFixed(2)} kg · Chargeable weight: ${Math.max(actual, volume).toFixed(2)} kg`);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (!isSimulationMode()) {
+      try { await createClient().auth.signOut(); } catch { /* Clear local app state even if sign-out cannot reach the auth service. */ }
+    }
     sessionStorage.removeItem(authStorageKey);
     dispatch({ type: "SET_CURRENT_USER", user: null });
     router.replace("/");
@@ -466,6 +531,21 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
       linkedin: value("linkedin"),
     };
     const renameCompany = companyName !== oldName;
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("customers").update({ name: companyName, contact: `${firstName} ${lastName}, ${profile.phone}`.replace(/, $/, ""), email: profile.email, phone: profile.phone, address: profile.companyAddress, linkedin: profile.linkedin }).eq("user_id", currentUser?.id);
+          if (error) throw error;
+          const updatedCustomer = { ...customerRecord, name: companyName, profile, email: profile.email, address: profile.companyAddress, linkedin: profile.linkedin, contact: `${firstName} ${lastName}, ${profile.phone}`.replace(/, $/, "") };
+          dashboardDB.customers.splice(0, dashboardDB.customers.length, updatedCustomer);
+          if (renameCompany && currentUser) dispatch({ type: "SET_CURRENT_USER", user: { ...currentUser, name: companyName } });
+          dispatch({ type: "SET_DB", DB: { ...DB, customers: dashboardDB.customers } });
+          setProfileFeedback("Profile updated in your account.");
+        } catch (error) { setProfileFeedback(error instanceof Error ? error.message : "Could not update your profile"); }
+      })();
+      return;
+    }
     const nextCustomers = DB.customers.map((customer) => customer.name === oldName ? {
       ...customer,
       name: companyName,
@@ -502,6 +582,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
 
   const issueShipmentInvoice = (booking: Booking) => {
     if (DB.invoices.some((invoice) => invoice.linkedShipment === booking.tracking)) return;
+    if (!isSimulationMode()) { setBookingNotice("Invoices are issued by the JAAD finance team."); return; }
     const sequence = DB.invoices.reduce((highest, invoice) => Math.max(highest, Number(invoice.no.replace("INV-", "")) || 0), 409) + 1;
     const invoice: Invoice = {
       no: `INV-${String(sequence).padStart(5, "0")}`,
@@ -529,6 +610,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
 
   const submitCustomerBooking = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const formElement = event.currentTarget;
     const form = new FormData(event.currentTarget);
     const value = (name: string) => String(form.get(name) || "").trim();
     const receiverName = value("receiverName");
@@ -569,6 +651,50 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
       receiverCountry: value("receiverCountry") || "Nigeria",
     };
 
+    if (!isSimulationMode()) {
+      if (!customerRecord?.id || !currentUser?.id) { setBookingError("Your customer profile is still loading. Please try again shortly."); return; }
+      const customerUserId = currentUser.id;
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("bookings").insert({
+            user_id: customerUserId,
+            customer_id: customerRecord.id,
+            customer_name: signedInCustomerName,
+            origin: booking.origin,
+            destination: booking.destination,
+            type: booking.type,
+            status: "Pending",
+            pickup_date: pickup,
+            weight: booking.weight,
+            declared_value: booking.value,
+            notes: booking.notes,
+            sender_name: booking.senderName,
+            sender_phone: booking.senderPhone,
+            sender_address: booking.senderAddress,
+            sender_city: booking.senderCity,
+            sender_state: booking.senderState,
+            sender_country: booking.senderCountry,
+            receiver_name: booking.receiverName,
+            receiver_phone: booking.receiverPhone,
+            receiver_address: booking.receiverAddress,
+            receiver_city: booking.receiverCity,
+            receiver_state: booking.receiverState,
+            receiver_country: booking.receiverCountry,
+          }).select("id, tracking_no").single();
+          if (error) throw error;
+          const savedBooking = { ...booking, id: data.id, tracking: data.tracking_no };
+          dashboardDB.bookings.unshift(savedBooking);
+          dispatch({ type: "SET_DB", DB: { ...DB, bookings: [...dashboardDB.bookings] } });
+          setBookingModalOpen(false);
+          setBookingError("");
+          setBookingNotice(`Shipment booked: ${savedBooking.tracking}`);
+          formElement.reset();
+        } catch (error) { setBookingError(error instanceof Error ? error.message : "Could not create your shipment booking"); }
+      })();
+      return;
+    }
+
     DB.bookings.unshift(booking);
     dispatch({ type: "SET_DB", DB: { ...DB, bookings: [...DB.bookings] } });
     try {
@@ -585,11 +711,12 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
     setBookingModalOpen(false);
     setBookingError("");
     setBookingNotice(`Shipment booked: ${tracking}`);
-    event.currentTarget.reset();
+    formElement.reset();
   };
 
   const sendCustomerMessage = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const formElement = event.currentTarget;
     const form = new FormData(event.currentTarget);
     const text = String(form.get("message") || "").trim();
     if (!text) return;
@@ -600,6 +727,33 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
       text,
       time: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
     };
+    if (!isSimulationMode()) {
+      if (!currentUser?.id) { setBookingNotice("Your session has expired. Please sign in again."); return; }
+      const customerUserId = currentUser.id;
+      void (async () => {
+        try {
+          const supabase = createClient();
+          let chatId = supportChat?.id;
+          if (!chatId) {
+            const { data, error } = await supabase.from("live_chats").insert({ user_id: customerUserId, customer_name: signedInCustomerName, customer_email: currentUser.email, status: "Open" }).select("id").single();
+            if (error) throw error;
+            chatId = data.id;
+          } else {
+            const { error } = await supabase.from("live_chats").update({ status: "Open" }).eq("id", chatId);
+            if (error) throw error;
+          }
+          if (!chatId) throw new Error("Could not initialize the support conversation");
+          const { error } = await supabase.from("live_chat_messages").insert({ chat_id: chatId, sender: "customer", message: text });
+          if (error) throw error;
+          const nextChat: SupportChat = supportChat ? { ...supportChat, status: "Open", messages: [...supportChat.messages, message] } : { id: chatId, visitor: signedInCustomerName, status: "Open", ticketId: null, messages: [message] };
+          setSupportChat(nextChat);
+          dashboardDB.chats.splice(0, dashboardDB.chats.length, nextChat);
+          dispatch({ type: "SET_DB", DB: { ...DB, chats: dashboardDB.chats } });
+          formElement.reset();
+        } catch (error) { setBookingNotice(error instanceof Error ? error.message : "Could not send support message"); }
+      })();
+      return;
+    }
     let storedState: { data?: Record<string, unknown>; [key: string]: unknown } = {};
     let chatsToUpdate = DB.chats;
     try {
@@ -644,7 +798,7 @@ export function CustomerPortal({ view = "overview" }: CustomerPortalProps) {
     } catch {
       // Keep the in-memory thread available for this session if storage is unavailable.
     }
-    event.currentTarget.reset();
+    formElement.reset();
   };
 
   const visibleCustomerMessages = customerChat?.messages.slice(customerChat.clearedIndex || 0) || [];

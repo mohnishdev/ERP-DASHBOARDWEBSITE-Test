@@ -28,6 +28,29 @@ const lanes = [
 ];
 
 type LeadForm = Omit<Lead, "id" | "notesLog"> & { note: string };
+type LiveLeadRow = {
+  id: string;
+  company: string;
+  contact_name: string;
+  job_title: string | null;
+  email: string | null;
+  phone: string;
+  source: string | null;
+  industry: string | null;
+  priority: string;
+  status: string;
+  assigned_to: string | null;
+  follow_up_date: string | null;
+  transport_mode: string | null;
+  cargo_type: string | null;
+  origin: string | null;
+  destination: string | null;
+  frequency: string | null;
+  volume_weight: string | null;
+  current_provider: string | null;
+  requirements: string | null;
+  value: number | string;
+};
 
 const initialLeadForm: LeadForm = {
   company: "", contactName: "", jobTitle: "", email: "", phone: "", source: "Website", industry: "", priority: "Hot", status: "New", assignedTo: "None", followUp: "", transportMode: "Trucks / Haulage", cargoType: "", origin: "", destination: "", frequency: "One-time", volume: "", currentProvider: "", requirements: "", value: 0, note: "",
@@ -56,6 +79,7 @@ export function CRMLeads() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<(typeof crmTabs)[number][0]>("pipeline");
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [staffProfiles, setStaffProfiles] = useState<{ id: string; name: string }[]>([]);
   const [leadDataState, setLeadDataState] = useState<"loading" | "connected" | "demo">("loading");
   const [leadDataError, setLeadDataError] = useState("");
   const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
@@ -75,7 +99,7 @@ export function CRMLeads() {
     async function loadLeads() {
       try {
         const supabase = createClient();
-        const [{ data: rows, error: leadsError }, { data: notes, error: notesError }] = await Promise.all([
+        const [{ data: rows, error: leadsError }, { data: notes, error: notesError }, { data: staffRows, error: staffError }] = await Promise.all([
           supabase
             .from("leads")
             .select("id, company, contact_name, job_title, email, phone, source, industry, priority, status, assigned_to, follow_up_date, transport_mode, cargo_type, origin, destination, frequency, volume_weight, current_provider, requirements, value")
@@ -84,10 +108,16 @@ export function CRMLeads() {
             .from("lead_notes")
             .select("lead_id, author_name, note, created_at")
             .order("created_at", { ascending: true }),
+          supabase.rpc("list_crm_assignable_staff"),
         ]);
         if (leadsError) throw leadsError;
         if (notesError) throw notesError;
+        if (staffError) throw staffError;
         if (!active) return;
+
+        const profiles: { id: string; name: string }[] = ((staffRows || []) as { profile_id: string; full_name: string }[]).map((row) => ({ id: row.profile_id, name: row.full_name }));
+        setStaffProfiles(profiles);
+        const staffById = new Map<string, string>(profiles.map((profile) => [profile.id, profile.name]));
 
         const notesByLead = new Map<string, Lead["notesLog"]>();
         (notes ?? []).forEach((note) => {
@@ -100,7 +130,7 @@ export function CRMLeads() {
           notesByLead.set(note.lead_id, entries);
         });
 
-        const liveLeads: Lead[] = (rows ?? []).map((row) => ({
+        const liveLeads: Lead[] = ((rows ?? []) as LiveLeadRow[]).map((row) => ({
           id: row.id,
           company: row.company,
           contactName: row.contact_name,
@@ -111,7 +141,8 @@ export function CRMLeads() {
           industry: row.industry ?? "",
           priority: row.priority,
           status: row.status,
-          assignedTo: row.assigned_to ?? "None",
+          assignedToId: row.assigned_to ?? undefined,
+          assignedTo: row.assigned_to ? staffById.get(row.assigned_to) || "None" : "None",
           followUp: row.follow_up_date ?? "",
           transportMode: row.transport_mode ?? "Cargo",
           cargoType: row.cargo_type ?? "",
@@ -163,7 +194,7 @@ export function CRMLeads() {
     if (lead) {
       const { notesLog: _notesLog, ...leadFields } = lead;
       void _notesLog;
-      setForm({ ...leadFields, note: "" });
+      setForm({ ...leadFields, assignedTo: lead.assignedTo, note: "" });
       setSelectedLead(lead);
     } else {
       setForm(initialLeadForm);
@@ -185,12 +216,9 @@ export function CRMLeads() {
       showToast("CRM data is offline; lead changes were not saved.");
       return;
     }
-    if (leadDataState === "connected" && form.assignedTo !== (selectedLead?.assignedTo ?? "None")) {
-      showToast("Staff assignment will be enabled with staff-profile sync.");
-      return;
-    }
+    const assignedStaff = leadDataState === "connected" ? staffProfiles.find((profile) => profile.name === form.assignedTo) : undefined;
     const data: Omit<Lead, "id" | "notesLog"> = {
-      company: form.company, contactName: form.contactName, jobTitle: form.jobTitle, email: form.email, phone: form.phone, source: form.source, industry: form.industry, priority: form.priority, status: form.status, assignedTo: form.assignedTo, followUp: form.followUp, transportMode: form.transportMode, cargoType: form.cargoType, origin: form.origin, destination: form.destination, frequency: form.frequency, volume: form.volume, currentProvider: form.currentProvider, requirements: form.requirements, value: Number(form.value) || 0,
+      company: form.company, contactName: form.contactName, jobTitle: form.jobTitle, email: form.email, phone: form.phone, source: form.source, industry: form.industry, priority: form.priority, status: form.status, assignedTo: assignedStaff?.name || (leadDataState === "connected" ? "None" : form.assignedTo), assignedToId: assignedStaff?.id, followUp: form.followUp, transportMode: form.transportMode, cargoType: form.cargoType, origin: form.origin, destination: form.destination, frequency: form.frequency, volume: form.volume, currentProvider: form.currentProvider, requirements: form.requirements, value: Number(form.value) || 0,
     };
     let savedLead: Lead;
     if (leadDataState === "connected") {
@@ -205,6 +233,7 @@ export function CRMLeads() {
         industry: data.industry || null,
         priority: data.priority,
         status: data.status,
+        assigned_to: assignedStaff?.id || null,
         follow_up_date: data.followUp || null,
         transport_mode: data.transportMode,
         cargo_type: data.cargoType || null,
@@ -314,7 +343,22 @@ export function CRMLeads() {
 
   const convertLead = (lead: Lead) => {
     if (leadDataState === "connected") {
-      showToast("Lead conversion will be enabled with the customer-account workflow.");
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data: customerId, error } = await supabase.rpc("convert_lead_to_customer", { target_lead_id: lead.id });
+          if (error) throw error;
+          const convertedLead = { ...lead, linkedCustomerId: customerId, linkedCustomer: lead.company, status: "Won" };
+          const leadIndex = dashboardDB.leads.findIndex((item) => item.id === lead.id);
+          if (leadIndex >= 0) dashboardDB.leads.splice(leadIndex, 1, convertedLead);
+          setLeads([...dashboardDB.leads]);
+          closeModal();
+          if (currentUser?.modules === "all" || currentUser?.modules.includes("customers")) navigate("customers");
+          showToast(`${lead.company} converted to a customer account`);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not convert lead");
+        }
+      })();
       return;
     }
     if (!isSimulationMode()) {
@@ -362,7 +406,7 @@ export function CRMLeads() {
     {activeTab === "leads" && <AdminTable<Lead> columns={[{ key: "company", label: "Company", render: (lead) => <span className="link-cell" onClick={() => openLeadDetail(lead)}>{lead.company}</span> }, { key: "contactName", label: "Contact" }, { key: "priority", label: "Priority", render: (lead) => <select className={`switch-select st-${lead.priority.toLowerCase()}`} value={lead.priority} onChange={(event) => updateLead(lead, "priority", event.target.value)} aria-label={`Priority: ${lead.priority}`}>{selectOptions(leadPriorities, lead.priority)}</select> }, { key: "status", label: "Status", render: (lead) => <select className={`switch-select st-${lead.status.toLowerCase().replace(/[^a-z0-9]/g, "")}`} value={lead.status} onChange={(event) => updateLead(lead, "status", event.target.value)} aria-label={`Status: ${lead.status}`}>{selectOptions(leadStatuses, lead.status)}</select> }, { key: "assignedTo", label: "Assigned to" }, { key: "value", label: "Value", render: (lead) => fmtNaira(lead.value) }]} data={leads} />}
     {activeTab === "campaigns" && <div className="grid g-3"><div className="card"><div className="card-head"><div className="card-title">Lagos SME haulage push</div>{statusBadge("Active")}</div><p style={{ color: "var(--text-dim)", fontSize: 12.4, margin: 0 }}>Instagram + WhatsApp broadcast targeting SME shippers in Lagos.</p></div><div className="card"><div className="card-head"><div className="card-title">Kano corridor awareness</div>{statusBadge("Scheduled")}</div><p style={{ color: "var(--text-dim)", fontSize: 12.4, margin: 0 }}>Radio and on-ground activation for the Lagos to Kano route.</p></div><div className="card"><div className="card-head"><div className="card-title">Referral incentive</div>{statusBadge("Active")}</div><p style={{ color: "var(--text-dim)", fontSize: 12.4, margin: 0 }}>10% discount for customers referring a new business account.</p></div></div>}
     {modal === "detail" && selectedLead && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal wide"><div className="modal-head"><h3>{selectedLead.company} {priorityBadge(selectedLead.priority)} {statusBadge(selectedLead.status)}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="doc-grid"><div><div className="lbl">Contact</div>{selectedLead.contactName}, {selectedLead.jobTitle}<br />{selectedLead.email}<br />{selectedLead.phone}</div><div><div className="lbl">Source / industry</div>{selectedLead.source}, {selectedLead.industry || "—"}<br /><div className="lbl" style={{ marginTop: 8 }}>Assigned to</div>{selectedLead.assignedTo}<br /><div className="lbl" style={{ marginTop: 8 }}>Next follow-up</div>{formatFollowUp(selectedLead.followUp)}</div></div><div className="form-section-title">Freight specifics</div><div className="doc-grid"><div><div className="lbl">Transport mode</div>{selectedLead.transportMode}<br /><div className="lbl" style={{ marginTop: 8 }}>Cargo type</div>{selectedLead.cargoType || "—"}<br /><div className="lbl" style={{ marginTop: 8 }}>Route</div>{selectedLead.origin} to {selectedLead.destination}</div><div><div className="lbl">Frequency</div>{selectedLead.frequency}<br /><div className="lbl" style={{ marginTop: 8 }}>Volume / weight</div>{selectedLead.volume || "—"}<br /><div className="lbl" style={{ marginTop: 8 }}>Current provider</div>{selectedLead.currentProvider || "None"}</div></div>{selectedLead.requirements && <div className="note">Special requirements: {selectedLead.requirements}</div>}<div className="form-section-title">Estimated deal value</div><div style={{ fontFamily: "var(--font-d)", fontSize: 20, fontWeight: 700 }}>{fmtNaira(selectedLead.value)}</div><div className="form-section-title">Add a note</div><div style={{ display: "flex", gap: 8 }}><input id="lead-note" placeholder="Log a call, email, or update" style={{ flex: 1 }} /><button className="btn btn-sm" onClick={() => { const input = document.getElementById("lead-note") as HTMLInputElement; addLeadNote(selectedLead, input.value); input.value = ""; }}>Add</button></div><div className="form-section-title">Notes log</div>{selectedLead.notesLog.length ? selectedLead.notesLog.slice().reverse().map((note) => <div style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 12 }} key={`${note.t}-${note.text}`}><b>{note.by}</b> <span style={{ color: "var(--text-faint)" }}>{note.t}</span><div style={{ marginTop: 3, color: "var(--text-dim)" }}>{note.text}</div></div>) : <div className="empty">No notes yet</div>}</div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button><button className="btn" onClick={() => openLeadForm(selectedLead)}>Edit</button>{!dashboardDB.customers.some((customer) => customer.name === selectedLead.company) && <button className="btn btn-primary" onClick={() => convertLead(selectedLead)}>Convert to customer</button>}</div></div></div>}
-    {modal === "form" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal wide"><div className="modal-head"><h3>{selectedLead ? "Edit lead" : "New lead"}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="form-section-title">Company &amp; contact</div><div className="field"><label>Company name *</label><input value={form.company} onChange={(event) => updateForm("company", event.target.value)} /></div><div className="field-row"><div className="field"><label>Contact name *</label><input value={form.contactName} onChange={(event) => updateForm("contactName", event.target.value)} /></div><div className="field"><label>Job title</label><input value={form.jobTitle} onChange={(event) => updateForm("jobTitle", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Email</label><input value={form.email} onChange={(event) => updateForm("email", event.target.value)} /></div><div className="field"><label>Phone *</label><input value={form.phone} onChange={(event) => updateForm("phone", event.target.value)} /></div></div><div className="form-section-title">Lead details</div><div className="field-row3"><div className="field"><label>Source</label><select value={form.source} onChange={(event) => updateForm("source", event.target.value)}>{selectOptions(leadSources, form.source)}</select></div><div className="field"><label>Priority *</label><select value={form.priority} onChange={(event) => updateForm("priority", event.target.value)}>{selectOptions(leadPriorities, form.priority)}</select></div><div className="field"><label>Status *</label><select value={form.status} onChange={(event) => updateForm("status", event.target.value)}>{selectOptions(leadStatuses, form.status)}</select></div></div><div className="field-row"><div className="field"><label>Industry</label><input value={form.industry} onChange={(event) => updateForm("industry", event.target.value)} /></div><div className="field"><label>Assigned to</label><select value={form.assignedTo} onChange={(event) => updateForm("assignedTo", event.target.value)}><option>None</option>{selectOptions(team, form.assignedTo)}</select></div></div><div className="field"><label>Next follow-up date</label><input type="date" value={form.followUp} onChange={(event) => updateForm("followUp", event.target.value)} /></div><div className="form-section-title">Freight specifics</div><div className="field-row"><div className="field"><label>Transport mode</label><select value={form.transportMode} onChange={(event) => updateForm("transportMode", event.target.value)}>{selectOptions(transportModes, form.transportMode)}</select></div><div className="field"><label>Cargo type</label><input value={form.cargoType} onChange={(event) => updateForm("cargoType", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Origin</label><input value={form.origin} onChange={(event) => updateForm("origin", event.target.value)} /></div><div className="field"><label>Destination</label><input value={form.destination} onChange={(event) => updateForm("destination", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Shipment frequency</label><select value={form.frequency} onChange={(event) => updateForm("frequency", event.target.value)}>{selectOptions(frequencies, form.frequency)}</select></div><div className="field"><label>Estimated volume / weight</label><input value={form.volume} onChange={(event) => updateForm("volume", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Current provider</label><input value={form.currentProvider} onChange={(event) => updateForm("currentProvider", event.target.value)} /></div><div className="field"><label>Estimated deal value</label><input type="number" value={form.value} onChange={(event) => updateForm("value", event.target.value)} /></div></div><div className="field"><label>Special requirements</label><textarea rows={2} value={form.requirements} onChange={(event) => updateForm("requirements", event.target.value)} /></div><div className="field"><label>Notes</label><textarea rows={2} placeholder="Optional note to log with this save" value={form.note} onChange={(event) => updateForm("note", event.target.value)} /></div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Cancel</button><button className="btn btn-primary" onClick={saveLead}>Save lead</button></div></div></div>}
+    {modal === "form" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal wide"><div className="modal-head"><h3>{selectedLead ? "Edit lead" : "New lead"}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="form-section-title">Company &amp; contact</div><div className="field"><label>Company name *</label><input value={form.company} onChange={(event) => updateForm("company", event.target.value)} /></div><div className="field-row"><div className="field"><label>Contact name *</label><input value={form.contactName} onChange={(event) => updateForm("contactName", event.target.value)} /></div><div className="field"><label>Job title</label><input value={form.jobTitle} onChange={(event) => updateForm("jobTitle", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Email</label><input value={form.email} onChange={(event) => updateForm("email", event.target.value)} /></div><div className="field"><label>Phone *</label><input value={form.phone} onChange={(event) => updateForm("phone", event.target.value)} /></div></div><div className="form-section-title">Lead details</div><div className="field-row3"><div className="field"><label>Source</label><select value={form.source} onChange={(event) => updateForm("source", event.target.value)}>{selectOptions(leadSources, form.source)}</select></div><div className="field"><label>Priority *</label><select value={form.priority} onChange={(event) => updateForm("priority", event.target.value)}>{selectOptions(leadPriorities, form.priority)}</select></div><div className="field"><label>Status *</label><select value={form.status} onChange={(event) => updateForm("status", event.target.value)}>{selectOptions(leadStatuses, form.status)}</select></div></div><div className="field-row"><div className="field"><label>Industry</label><input value={form.industry} onChange={(event) => updateForm("industry", event.target.value)} /></div><div className="field"><label>Assigned to</label><select value={form.assignedTo} onChange={(event) => updateForm("assignedTo", event.target.value)}><option>None</option>{leadDataState === "connected" ? staffProfiles.map((profile) => <option value={profile.name} key={profile.id}>{profile.name}</option>) : selectOptions(team, form.assignedTo)}</select></div></div><div className="field"><label>Next follow-up date</label><input type="date" value={form.followUp} onChange={(event) => updateForm("followUp", event.target.value)} /></div><div className="form-section-title">Freight specifics</div><div className="field-row"><div className="field"><label>Transport mode</label><select value={form.transportMode} onChange={(event) => updateForm("transportMode", event.target.value)}>{selectOptions(transportModes, form.transportMode)}</select></div><div className="field"><label>Cargo type</label><input value={form.cargoType} onChange={(event) => updateForm("cargoType", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Origin</label><input value={form.origin} onChange={(event) => updateForm("origin", event.target.value)} /></div><div className="field"><label>Destination</label><input value={form.destination} onChange={(event) => updateForm("destination", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Shipment frequency</label><select value={form.frequency} onChange={(event) => updateForm("frequency", event.target.value)}>{selectOptions(frequencies, form.frequency)}</select></div><div className="field"><label>Estimated volume / weight</label><input value={form.volume} onChange={(event) => updateForm("volume", event.target.value)} /></div></div><div className="field-row"><div className="field"><label>Current provider</label><input value={form.currentProvider} onChange={(event) => updateForm("currentProvider", event.target.value)} /></div><div className="field"><label>Estimated deal value</label><input type="number" value={form.value} onChange={(event) => updateForm("value", event.target.value)} /></div></div><div className="field"><label>Special requirements</label><textarea rows={2} value={form.requirements} onChange={(event) => updateForm("requirements", event.target.value)} /></div><div className="field"><label>Notes</label><textarea rows={2} placeholder="Optional note to log with this save" value={form.note} onChange={(event) => updateForm("note", event.target.value)} /></div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Cancel</button><button className="btn btn-primary" onClick={saveLead}>Save lead</button></div></div></div>}
     {toast && <div className="toast-wrap"><div className="toast">{toast}</div></div>}
   </>;
 }

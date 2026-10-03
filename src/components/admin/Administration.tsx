@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { AdminTable } from "./AdminTable";
 import { dashboardDB, type AdminRole, type AdminUser, type Announcement, type Integration } from "@/lib/dashboard";
 import { useAppDispatch, useAppState, useNavigate, viewLabels } from "@/context/AppContext";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
 
 const tabs = [
   ["users", "Users"],
@@ -28,8 +30,39 @@ export function Administration() {
   const [announcementForm, setAnnouncementForm] = useState({ title: "", body: "" });
   const [toast, setToast] = useState("");
 
+  const loadAdministrationData = async () => {
+    if (isSimulationMode()) return;
+    try {
+      const supabase = createClient();
+      const [profileResult, roleResult, announcementResult, auditResult] = await Promise.all([
+        supabase.from("profiles").select("id, full_name, email, status, role_id"),
+        supabase.from("roles").select("id, name, description, permitted_modules").order("name"),
+        supabase.from("announcements").select("id, title, body, created_at").order("created_at", { ascending: false }),
+        supabase.from("audit_log").select("actor_name, action, created_at").order("created_at", { ascending: false }).limit(200),
+      ]);
+      const error = profileResult.error || roleResult.error || announcementResult.error || auditResult.error;
+      if (error) throw error;
+      const roleRows: AdminRole[] = (roleResult.data || []).map((role) => ({ id: role.id, role: role.name, desc: role.description || "", users: 0, perms: role.permitted_modules || [] }));
+      const roleNames = new Map(roleRows.map((role) => [role.id, role.role]));
+      const nextUsers: AdminUser[] = (profileResult.data || []).map((profile) => ({ id: profile.id, name: profile.full_name, email: profile.email, status: profile.status, role: roleNames.get(profile.role_id) || "Unassigned" }));
+      roleRows.forEach((role) => { role.users = nextUsers.filter((user) => user.role === role.role).length; });
+      const nextAnnouncements: Announcement[] = (announcementResult.data || []).map((announcement) => ({ id: announcement.id, title: announcement.title, body: announcement.body, date: new Date(announcement.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) }));
+      const nextAudit = (auditResult.data || []).map((entry) => ({ who: entry.actor_name, action: entry.action, time: new Date(entry.created_at).toLocaleString("en-GB") }));
+      dashboardDB.users.splice(0, dashboardDB.users.length, ...nextUsers);
+      dashboardDB.roles.splice(0, dashboardDB.roles.length, ...roleRows);
+      dashboardDB.announcements.splice(0, dashboardDB.announcements.length, ...nextAnnouncements);
+      dashboardDB.auditLog.splice(0, dashboardDB.auditLog.length, ...nextAudit);
+      setUsers(nextUsers);
+      setRoles(roleRows);
+      setAnnouncements(nextAnnouncements);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load administration data");
+    }
+  };
+
   useEffect(() => {
     dispatch({ type: "SET_CURRENT_VIEW", view: "admin" });
+    if (!isSimulationMode()) queueMicrotask(() => { void loadAdministrationData(); });
   }, [dispatch]);
 
   const showToast = (message: string) => {
@@ -42,14 +75,40 @@ export function Administration() {
     dispatch({ type: "SET_CURRENT_TAB", view: "admin", tab });
   };
 
-  const updateUserStatus = (user: AdminUser, status: string) => {
+  const updateUserStatus = async (user: AdminUser, status: string) => {
+    if (!isSimulationMode()) {
+      try {
+        if (!user.id) throw new Error("User record is missing its database ID");
+        const supabase = createClient();
+        const { error } = await supabase.rpc("admin_set_profile_status", { target_profile_id: user.id, target_status: status });
+        if (error) throw error;
+        user.status = status;
+        setUsers([...users]);
+      } catch (error) { showToast(error instanceof Error ? error.message : "Could not update user status"); }
+      return;
+    }
     user.status = status;
     setUsers([...dashboardDB.users]);
     showToast(`${user.name} set to ${status}`);
   };
 
-  const addUser = () => {
+  const addUser = async () => {
     if (!userForm.name.trim() || !userForm.email.trim()) { showToast("Name and email are required"); return; }
+    if (!isSimulationMode()) {
+      const role = roles.find((candidate) => candidate.role === userForm.role) || roles[0];
+      if (!role?.id) { showToast("Choose a role with a valid database record"); return; }
+      try {
+        const response = await fetch("/api/admin/invite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: userForm.name.trim(), email: userForm.email.trim(), roleId: role.id }) });
+        const result = await response.json() as { user?: AdminUser; error?: string };
+        if (!response.ok || !result.user) throw new Error(result.error || "Staff invitation failed");
+        setUsers((current) => [result.user as AdminUser, ...current]);
+        setModal(null);
+        setUserForm({ name: "", email: "", role: "" });
+        selectTab("users");
+        showToast(`Invitation sent to ${result.user.email}`);
+      } catch (error) { showToast(error instanceof Error ? error.message : "Staff invitation failed"); }
+      return;
+    }
     const user = { name: userForm.name.trim(), email: userForm.email.trim(), role: userForm.role || dashboardDB.roles[0].role, status: "Active" };
     dashboardDB.users.unshift(user);
     setUsers([...dashboardDB.users]);
@@ -61,6 +120,22 @@ export function Administration() {
 
   const saveAnnouncement = () => {
     if (!announcementForm.title.trim() || !announcementForm.body.trim()) { showToast("Add a title and a message"); return; }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("announcements").insert({ title: announcementForm.title.trim(), body: announcementForm.body.trim() }).select("id, created_at").single();
+          if (error) throw error;
+          const announcement = { id: data.id, title: announcementForm.title.trim(), body: announcementForm.body.trim(), date: new Date(data.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) };
+          dashboardDB.announcements.unshift(announcement);
+          setAnnouncements([...dashboardDB.announcements]);
+          setAnnouncementForm({ title: "", body: "" });
+          setModal(null);
+          showToast("Announcement posted");
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not post announcement"); }
+      })();
+      return;
+    }
     const announcement = { id: `an${Date.now()}`, title: announcementForm.title.trim(), body: announcementForm.body.trim(), date: new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) };
     dashboardDB.announcements.unshift(announcement);
     setAnnouncements([...dashboardDB.announcements]);
@@ -70,6 +145,20 @@ export function Administration() {
   };
 
   const removeAnnouncement = (index: number) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const announcement = announcements[index];
+          const supabase = createClient();
+          const { error } = await supabase.from("announcements").delete().eq("id", announcement.id);
+          if (error) throw error;
+          dashboardDB.announcements.splice(index, 1);
+          setAnnouncements([...dashboardDB.announcements]);
+          showToast("Announcement removed");
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not remove announcement"); }
+      })();
+      return;
+    }
     dashboardDB.announcements.splice(index, 1);
     setAnnouncements([...dashboardDB.announcements]);
     showToast("Announcement removed");
@@ -77,7 +166,24 @@ export function Administration() {
 
   const saveRoleAccess = (permissions: string[]) => {
     if (selectedRole === null) return;
-    dashboardDB.roles[selectedRole].perms = permissions;
+    if (!isSimulationMode()) {
+      const selected = roles[selectedRole];
+      const roleId = selected?.id;
+      const roleName = selected?.role || "Role";
+      void (async () => {
+        try {
+          if (!roleId) throw new Error("Role record is missing its database ID");
+          const supabase = createClient();
+          const { error } = await supabase.from("roles").update({ permitted_modules: permissions }).eq("id", roleId);
+          if (error) throw error;
+          setRoles((current) => current.map((role, index) => index === selectedRole ? { ...role, perms: permissions } : role));
+          setModal(null);
+          showToast(`${roleName} access updated`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update role access"); }
+      })();
+      return;
+    }
+    dashboardDB.roles.splice(selectedRole, 1, { ...dashboardDB.roles[selectedRole], perms: permissions });
     setRoles([...dashboardDB.roles]);
     setModal(null);
     showToast(`${dashboardDB.roles[selectedRole].role} access updated`);

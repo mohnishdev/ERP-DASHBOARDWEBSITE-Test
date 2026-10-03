@@ -4,6 +4,9 @@ import { useEffect, useState, type ChangeEvent } from "react";
 import { AdminTable } from "./AdminTable";
 import { useAppDispatch, useAppState } from "@/context/AppContext";
 import { dashboardDB, type EmailTemplate, type SupportCall, type SupportChat, type SupportEmail, type SupportSms, type SupportTeamMessage, type SupportTicket, type WhatsAppMessage } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
+import { persistSimulationState } from "@/lib/simulation-store";
 
 const communicationModes = ["chat", "email", "sms", "call", "whatsapp"] as const;
 const supportTabs = [["tickets", "Tickets"], ["chat", "Live chat"], ["team", "Team chat"], ["kb", "Knowledge base"]] as const;
@@ -16,7 +19,7 @@ const whatsappTabs = ["compose", "log"] as const;
 const supportStorageKey = "jaad_erp_state_v3";
 
 function readPersistedSupport<T>(key: string, fallback: T) {
-  if (typeof window === "undefined") return fallback;
+  if (typeof window === "undefined" || !isSimulationMode()) return fallback;
   try {
     const saved = JSON.parse(localStorage.getItem(supportStorageKey) || "null");
     return saved?.data?.[key] ?? fallback;
@@ -52,7 +55,7 @@ export function Support() {
   const [tickets, setTickets] = useState<SupportTicket[]>(() => readPersistedSupport("tickets", DB.tickets));
   const [chats, setChats] = useState<SupportChat[]>(() => readPersistedSupport("chats", DB.chats));
   const [teamChat, setTeamChat] = useState<SupportTeamMessage[]>(() => readPersistedSupport("teamChat", DB.teamChat));
-  const [knowledgeBase, setKnowledgeBase] = useState<{ q: string; a: string }[]>(() => readPersistedSupport("kb", DB.kb));
+  const [knowledgeBase, setKnowledgeBase] = useState<{ id?: string; q: string; a: string }[]>(() => readPersistedSupport("kb", DB.kb));
   const [emails, setEmails] = useState<SupportEmail[]>(() => readPersistedSupport("emails", DB.emails));
   const [emailTemplates, setEmailTemplates] = useState<EmailTemplate[]>(() => readPersistedSupport("emailTemplates", DB.emailTemplates));
   const [smsMessages, setSmsMessages] = useState<SupportSms[]>(() => readPersistedSupport("smsMessages", DB.smsMessages));
@@ -64,7 +67,7 @@ export function Support() {
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
   const [callStarted, setCallStarted] = useState<number | null>(null);
   const [callDuration, setCallDuration] = useState("00:00");
-  const [modal, setModal] = useState<"email" | "template" | "call" | "kb" | null>(null);
+  const [modal, setModal] = useState<"ticket" | "email" | "template" | "call" | "kb" | null>(null);
   const [selectedEmail, setSelectedEmail] = useState<SupportEmail | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<EmailTemplate | null>(null);
   const [selectedCall, setSelectedCall] = useState<SupportCall | null>(null);
@@ -73,12 +76,61 @@ export function Support() {
   const [knowledgeForm, setKnowledgeForm] = useState({ question: "", answer: "" });
   const [toast, setToast] = useState("");
 
+  const loadSupportData = async () => {
+    try {
+      const supabase = createClient();
+      const [ticketResult, chatResult, messageResult, teamResult, kbResult, emailResult, templateResult, smsResult, callResult, whatsappResult] = await Promise.all([
+        supabase.from("tickets").select("id, ticket_no, customer_name, subject, priority, status, channel, opened_at, closed_at").order("opened_at", { ascending: false }),
+        supabase.from("live_chats").select("id, customer_name, customer_email, customer_phone, status, created_at, updated_at").order("updated_at", { ascending: false }),
+        supabase.from("live_chat_messages").select("id, chat_id, sender, message, attachment_url, created_at").order("created_at"),
+        supabase.from("team_chat_messages").select("id, sender_name, message, created_at").order("created_at"),
+        supabase.from("kb_articles").select("id, question, answer").order("created_at", { ascending: false }),
+        supabase.from("support_emails").select("id, to_address, cc, bcc, subject, body, invoice_no, attachment_url, attachment_name, status, folder, created_at, direction").order("created_at", { ascending: false }),
+        supabase.from("support_email_templates").select("id, name, subject, body").order("created_at", { ascending: false }),
+        supabase.from("support_sms").select("id, to_number, message, status, created_at").order("created_at", { ascending: false }),
+        supabase.from("support_calls").select("id, number, status, notes, duration, started_at, ended_at, created_at").order("created_at", { ascending: false }),
+        supabase.from("support_whatsapp").select("id, to_number, message, status, attachment_url, attachment_name, created_at, direction").order("created_at", { ascending: false }),
+      ]);
+      const error = ticketResult.error || chatResult.error || messageResult.error || teamResult.error || kbResult.error || emailResult.error || templateResult.error || smsResult.error || callResult.error || whatsappResult.error;
+      if (error) throw error;
+      const chatsFromDb: SupportChat[] = (chatResult.data || []).map((chat) => ({ id: chat.id, visitor: chat.customer_name || chat.customer_email || chat.customer_phone || "Customer", status: chat.status, ticketId: null, messages: (messageResult.data || []).filter((message) => message.chat_id === chat.id).map((message) => ({ from: message.sender, text: message.message || "", img: message.attachment_url || undefined, time: new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })) }));
+      setTickets((ticketResult.data || []).map((ticket) => ({ id: ticket.ticket_no, dbId: ticket.id, customer: ticket.customer_name || "Customer", subject: ticket.subject, priority: ticket.priority, status: ticket.status, channel: ticket.channel || "Email", opened: ticket.opened_at.replace("T", " ").slice(0, 16), closed: ticket.closed_at ? ticket.closed_at.replace("T", " ").slice(0, 16) : "" })));
+      setChats(chatsFromDb);
+      setTeamChat((teamResult.data || []).map((message) => ({ who: message.sender_name, text: message.message, time: new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })));
+      setKnowledgeBase((kbResult.data || []).map((article) => ({ id: article.id, q: article.question, a: article.answer })));
+      setEmails((emailResult.data || []).map((email) => ({ id: email.id, to: email.to_address, cc: email.cc || "", bcc: email.bcc || "", subject: email.subject, body: email.body, invoiceNo: email.invoice_no || "", attachment: email.attachment_url || "", attachmentName: email.attachment_name || "", status: email.status, folder: email.folder || email.direction || "sent", date: email.created_at })));
+      setEmailTemplates((templateResult.data || []).map((template) => ({ id: template.id, name: template.name, subject: template.subject, body: template.body })));
+      setSmsMessages((smsResult.data || []).map((message) => ({ to: message.to_number, body: message.message, status: message.status, date: message.created_at })));
+      setCalls((callResult.data || []).map((call) => ({ id: call.id, number: call.number, status: call.status, result: call.notes || call.status, date: call.created_at, started: call.started_at ? Date.parse(call.started_at) : undefined, ended: call.ended_at ? Date.parse(call.ended_at) : undefined, duration: call.duration || "00:00" })));
+      setWhatsappMessages((whatsappResult.data || []).map((message) => ({ id: message.id, chatId: message.to_number, to: message.to_number, body: message.message, attachment: message.attachment_url || "", attachmentName: message.attachment_name || "", from: message.direction === "inbound" ? "customer" : "agent", status: message.status, date: message.created_at, time: new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })));
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load support data");
+    }
+  };
+
   useEffect(() => {
     if (!currentView || ["support", ...communicationModes.filter((mode) => mode !== "chat")].includes(currentView)) return;
     dispatch({ type: "SET_CURRENT_VIEW", view: "support" });
   }, [currentView, dispatch]);
 
   useEffect(() => {
+    if (!isSimulationMode()) queueMicrotask(() => { void loadSupportData(); });
+  }, []);
+
+  useEffect(() => {
+    if (!isSimulationMode()) return;
+    if (isSimulationMode()) {
+      dashboardDB.tickets.splice(0, dashboardDB.tickets.length, ...tickets);
+      dashboardDB.chats.splice(0, dashboardDB.chats.length, ...chats);
+      dashboardDB.teamChat.splice(0, dashboardDB.teamChat.length, ...teamChat);
+      dashboardDB.kb.splice(0, dashboardDB.kb.length, ...knowledgeBase);
+      dashboardDB.emails.splice(0, dashboardDB.emails.length, ...emails);
+      dashboardDB.emailTemplates.splice(0, dashboardDB.emailTemplates.length, ...emailTemplates);
+      dashboardDB.smsMessages.splice(0, dashboardDB.smsMessages.length, ...smsMessages);
+      dashboardDB.calls.splice(0, dashboardDB.calls.length, ...calls);
+      dashboardDB.whatsappMessages.splice(0, dashboardDB.whatsappMessages.length, ...whatsappMessages);
+      persistSimulationState(dashboardDB);
+    }
     try {
       const saved = JSON.parse(localStorage.getItem(supportStorageKey) || "null") || {};
       localStorage.setItem(supportStorageKey, JSON.stringify({ ...saved, savedAt: Date.now(), data: { ...(saved.data || {}), tickets, chats, teamChat, kb: knowledgeBase, emails, emailTemplates, smsMessages, calls, whatsappMessages } }));
@@ -117,6 +169,22 @@ export function Support() {
     const question = knowledgeForm.question.trim();
     const answer = knowledgeForm.answer.trim();
     if (!question || !answer) { showToast("Both question and answer are needed"); return; }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("kb_articles").insert({ question, answer }).select("id").single();
+          if (error) throw error;
+          const next = [{ id: data.id, q: question, a: answer }, ...knowledgeBase];
+          setKnowledgeBase(next);
+          setKnowledgeForm({ question: "", answer: "" });
+          setModal(null);
+          selectSupportTab("kb");
+          showToast("Article added");
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not add article"); }
+      })();
+      return;
+    }
     const nextKnowledgeBase = [{ q: question, a: answer }, ...knowledgeBase];
     dashboardDB.kb.splice(0, dashboardDB.kb.length, ...nextKnowledgeBase);
     setKnowledgeBase(nextKnowledgeBase);
@@ -127,9 +195,63 @@ export function Support() {
   };
 
   const updateTicket = (ticket: SupportTicket, field: "priority" | "status", value: string) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          if (!ticket.dbId) throw new Error("Ticket is missing its database ID");
+          const supabase = createClient();
+          const update = field === "status" ? { status: value, closed_at: value === "Resolved" ? new Date().toISOString() : null } : { priority: value };
+          const { error } = await supabase.from("tickets").update(update).eq("id", ticket.dbId);
+          if (error) throw error;
+          const next = tickets.map((item) => item.dbId === ticket.dbId ? { ...item, [field]: value, ...(field === "status" ? { closed: value === "Resolved" ? nowStamp() : "" } : {}) } : item);
+          setTickets(next);
+          showToast(`${ticket.id} ${field} set to ${value}`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update ticket"); }
+      })();
+      return;
+    }
     const nextTickets = tickets.map((currentTicket) => currentTicket === ticket ? { ...currentTicket, [field]: value, ...(field === "status" && value === "Resolved" ? { closed: nowStamp() } : {}) } : currentTicket);
     setTickets(nextTickets);
     showToast(`${ticket.id} ${field} set to ${value}`);
+  };
+
+  const saveTicket = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const customer = String(form.get("customer") || "").trim();
+    const subject = String(form.get("subject") || "").trim();
+    if (!customer || !subject) { showToast("Choose a customer and enter a subject"); return; }
+    const nextTicketNumber = Math.max(0, ...tickets.map((ticket) => Number(ticket.id.replace(/\D/g, "")) || 0)) + 1;
+    const ticketNo = `TCK-${String(nextTicketNumber).padStart(4, "0")}`;
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("tickets").insert({ ticket_no: ticketNo, customer_name: customer, subject, priority: String(form.get("priority") || "Normal"), status: "Open", channel: String(form.get("channel") || "Email") }).select("id, opened_at").single();
+          if (error) throw error;
+          const ticket: SupportTicket = { id: ticketNo, dbId: data.id, customer, subject, priority: String(form.get("priority") || "Normal"), status: "Open", channel: String(form.get("channel") || "Email"), opened: data.opened_at.replace("T", " ").slice(0, 16), closed: "" };
+          setTickets((current) => [ticket, ...current]);
+          setModal(null);
+          selectSupportTab("tickets");
+          showToast(`${ticket.id} created`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not create ticket"); }
+      })();
+      return;
+    }
+    const ticket: SupportTicket = {
+      id: ticketNo,
+      customer,
+      subject,
+      priority: String(form.get("priority") || "Normal"),
+      status: "Open",
+      channel: String(form.get("channel") || "Email"),
+      opened: nowStamp(),
+      closed: "",
+    };
+    setTickets((currentTickets) => [ticket, ...currentTickets]);
+    setModal(null);
+    selectSupportTab("tickets");
+    showToast(`${ticket.id} created`);
   };
 
   const filteredChats = chats.filter((chat) => chat.status === chatFilter);
@@ -141,12 +263,54 @@ export function Support() {
   };
 
   const updateChat = (chat: SupportChat, changes: Partial<SupportChat>, message: string) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          if (changes.status) {
+            const { error } = await supabase.from("live_chats").update({ status: changes.status }).eq("id", chat.id);
+            if (error) throw error;
+          }
+          const nextMessage = changes.messages?.[changes.messages.length - 1];
+          if (nextMessage) {
+            const { error } = await supabase.from("live_chat_messages").insert({ chat_id: chat.id, sender: nextMessage.from === "visitor" ? "customer" : nextMessage.from, message: nextMessage.text, attachment_url: nextMessage.img || null });
+            if (error) throw error;
+          }
+          setChats((current) => current.map((item) => item.id === chat.id ? { ...item, ...changes } : item));
+          showToast(message);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update chat"); }
+      })();
+      return;
+    }
     setChats((currentChats) => currentChats.map((currentChat) => currentChat === chat ? { ...currentChat, ...changes } : currentChat));
     showToast(message);
   };
 
   const setChatStatus = (chat: SupportChat, status: string) => {
     const nextTicketNumber = Math.max(0, ...tickets.map((ticketRecord) => Number(ticketRecord.id.replace(/\D/g, "")) || 0)) + 1;
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          let ticket: SupportTicket | null = null;
+          if (status === "Pending" && !chat.ticketId) {
+            const ticketNo = `TCK-${String(nextTicketNumber).padStart(4, "0")}`;
+            const subject = `Live chat: ${(chat.messages.filter((message) => message.from === "visitor" || message.from === "customer").slice(-1)[0]?.text || "Escalated conversation").slice(0, 60)}`;
+            const { data, error } = await supabase.from("tickets").insert({ ticket_no: ticketNo, customer_name: chat.visitor, subject, priority: "Normal", status: "Open", channel: "Live chat" }).select("id, opened_at").single();
+            if (error) throw error;
+            ticket = { id: ticketNo, dbId: data.id, customer: chat.visitor, subject, priority: "Normal", status: "Open", channel: "Live chat", opened: data.opened_at.replace("T", " ").slice(0, 16), closed: "" };
+          }
+          const { error: chatError } = await supabase.from("live_chats").update({ status }).eq("id", chat.id);
+          if (chatError) throw chatError;
+          if (ticket) setTickets((current) => [ticket as SupportTicket, ...current]);
+          setChats((current) => current.map((item) => item.id === chat.id ? { ...item, status, ...(ticket ? { ticketId: ticket.id } : {}), ...(status === "Resolved" ? { clearedIndex: chat.messages.length } : {}) } : item));
+          setChatFilter(status);
+          showToast(ticket ? `Moved to pending, ticket ${ticket.id} created` : status === "Resolved" ? `${chat.visitor} marked Resolved` : `${chat.visitor} marked ${status}`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update chat status"); }
+      })();
+      return;
+    }
+
     const ticket = status === "Pending" && !chat.ticketId ? { id: `TCK-${String(nextTicketNumber).padStart(4, "0")}`, customer: chat.visitor, subject: `Live chat: ${(chat.messages.filter((message) => message.from === "visitor").slice(-1)[0]?.text || "Escalated conversation").slice(0, 60)}`, priority: "Medium", status: "Open", channel: "Live chat", opened: nowStamp(), closed: "" } : null;
     if (ticket) setTickets((currentTickets) => [ticket, ...currentTickets]);
     updateChat(chat, { status, ...(ticket ? { ticketId: ticket.id } : {}), ...(status === "Resolved" ? { clearedIndex: chat.messages.length } : {}) }, ticket ? `Moved to pending, ticket ${ticket.id} created` : status === "Resolved" ? `${chat.visitor} marked Resolved, cleared from their view` : `${chat.visitor} marked ${status}`);
@@ -177,7 +341,7 @@ export function Support() {
 
   const renderChat = () => <div className="chat-shell"><div className="chat-list"><div style={{ display: "flex", gap: 8, padding: 12, borderBottom: "1px solid var(--border)" }}>{["Open", "Pending", "Resolved"].map((filter) => <button className={`btn btn-sm${chatFilter === filter ? " btn-primary" : ""}`} style={{ flex: 1, padding: "7px 4px", fontSize: 11.5 }} key={filter} onClick={() => chooseChatFilter(filter)}>{filter} ({chats.filter((chat) => chat.status === filter).length})</button>)}</div>{filteredChats.length ? filteredChats.map((chat) => { const lastMessage = chat.messages[chat.messages.length - 1]; return <div className={`chat-list-item${chat.id === selectedChat?.id ? " active" : ""}${chat.status === "Resolved" ? " resolved-item" : ""}`} key={chat.id} onClick={() => setActiveChatId(chat.id)}><div className="nm">{chat.status === "Resolved" ? "✓ " : ""}{chat.visitor}</div><div className="pv">{lastMessage?.text || ""}</div></div>; }) : <div className="empty" style={{ padding: 16 }}>No {chatFilter.toLowerCase()} chats</div>}</div>{selectedChat ? <div className="chat-pane"><div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}><div style={{ fontWeight: 700, fontSize: 12.8 }}>{selectedChat.visitor} {statusBadge(selectedChat.status)}</div><div className="row-actions">{selectedChat.status !== "Pending" && <button className="btn btn-sm" onClick={() => setChatStatus(selectedChat, "Pending")}>Move to pending</button>}{selectedChat.status !== "Resolved" ? <button className="btn btn-sm btn-primary" onClick={() => setChatStatus(selectedChat, "Resolved")}>Mark resolved</button> : <button className="btn btn-sm btn-primary" onClick={() => setChatStatus(selectedChat, "Open")}>Reopen</button>}</div></div>{selectedChat.status === "Resolved" && <div style={{ background: "var(--green-dim)", color: "var(--green)", fontSize: 12, fontWeight: 700, padding: "9px 14px", textAlign: "center" }}>✓ This conversation is resolved</div>}<div className="chat-msgs">{selectedChat.messages.map((message, index) => <div className={`msg ${message.from}`} key={`${message.time}-${index}`}>{message.img && <img src={message.img} alt={message.fileName || "Attachment"} style={{ cursor: "pointer", maxWidth: 220, borderRadius: 8, display: "block", marginBottom: message.text ? 6 : 0 }} />}{message.text}<span className="tm">{message.time}</span></div>)}</div><form className="chat-input" onSubmit={sendChatReply}><label className="chat-file-btn" style={{ cursor: "pointer" }} title="Attach a file">📎<input type="file" style={{ display: "none" }} onChange={sendChatFile} /></label><input name="message" placeholder="Type a reply" /><button className="btn btn-primary btn-sm" type="submit">Send</button></form></div> : <div className="chat-pane" style={{ alignItems: "center", justifyContent: "center" }}><div className="empty">Select a chat</div></div>}</div>;
 
-  const sendTeamMessage = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const text = String(form.get("message") || "").trim(); if (!text) return; setTeamChat((currentMessages) => [...currentMessages, { who: "You", text, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]); event.currentTarget.reset(); };
+  const sendTeamMessage = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const text = String(form.get("message") || "").trim(); if (!text) return; if (!isSimulationMode()) { void (async () => { try { const supabase = createClient(); const { data: { user } } = await supabase.auth.getUser(); const { error } = await supabase.from("team_chat_messages").insert({ user_id: user?.id || null, sender_name: user?.user_metadata?.full_name || user?.email || "Support", message: text }); if (error) throw error; setTeamChat((current) => [...current, { who: user?.user_metadata?.full_name || user?.email || "Support", text, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]); event.currentTarget.reset(); } catch (error) { showToast(error instanceof Error ? error.message : "Could not send team message"); } })(); return; } setTeamChat((currentMessages) => [...currentMessages, { who: "You", text, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]); event.currentTarget.reset(); };
   const renderTeamChat = () => <div className="chat-pane" style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", height: "calc(100vh - 230px)", minHeight: 560 }}><div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12.8 }}>Team channel<span style={{ fontWeight: 400, color: "var(--text-faint)", marginLeft: 8 }}>Everyone with Support access can post here</span></div><div className="chat-msgs">{teamChat.length ? teamChat.map((message, index) => <div className={`msg ${message.who === "You" ? "agent" : "visitor"}`} key={`${message.time}-${index}`}><div style={{ fontSize: 10.5, fontWeight: 700, opacity: .75, marginBottom: 2 }}>{message.who}</div>{message.text}<span className="tm">{message.time}</span></div>) : <div className="empty">No messages yet, say hello to the team</div>}</div><form className="chat-input" onSubmit={sendTeamMessage}><input name="message" placeholder="Message the team" /><button className="btn btn-primary btn-sm" type="submit">Send</button></form></div>;
 
   const renderKnowledgeBase = () => <>{knowledgeBase.map((article, index) => <div className="card" style={{ marginBottom: 12 }} key={`${article.q}-${index}`}><div className="card-title" style={{ marginBottom: 6 }}>{article.q}</div><p style={{ color: "var(--text-dim)", fontSize: 12.6, margin: 0 }}>{article.a}</p></div>)}</>;
@@ -187,6 +351,21 @@ export function Support() {
   const replaceTemplateVariables = (value: string, invoiceNo: string) => { const invoice = DB.invoices.find((item) => item.no === invoiceNo); return value.replace(/{{invoice}}/g, invoice?.no || "").replace(/{{customer}}/g, invoice?.customer || "").replace(/{{tracking}}/g, invoice?.linkedShipment || ""); };
   const saveEmail = (status: "Draft" | "Sent") => {
     if (status === "Sent" && (!emailForm.to.trim() || !emailForm.subject.trim() || !emailForm.body.trim())) { showToast("Recipient, subject and message are required"); return; }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("support_emails").insert({ to_address: emailForm.to.trim(), cc: emailForm.cc.trim(), bcc: emailForm.bcc.trim(), subject: emailForm.subject.trim(), body: emailForm.body, invoice_no: emailForm.invoiceNo, attachment_url: emailForm.attachment, attachment_name: emailForm.attachmentName, status: status === "Sent" ? "Queued" : "Draft", folder: status === "Sent" ? "sent" : "drafts", direction: "outbound" }).select("id, created_at, status").single();
+          if (error) throw error;
+          const email: SupportEmail = { id: data.id, to: emailForm.to.trim(), cc: emailForm.cc.trim(), bcc: emailForm.bcc.trim(), subject: emailForm.subject.trim(), body: emailForm.body, invoiceNo: emailForm.invoiceNo, attachment: emailForm.attachment, attachmentName: emailForm.attachmentName, status: data.status, folder: status === "Sent" ? "sent" : "drafts", date: data.created_at };
+          setEmails((current) => [email, ...current]);
+          setEmailForm({ to: "", cc: "", bcc: "", subject: "", body: "", invoiceNo: "", attachment: "", attachmentName: "" });
+          setCommunicationTab(status === "Sent" ? "sent" : "drafts");
+          showToast(status === "Sent" ? "Email recorded for provider delivery" : "Email saved as draft");
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not save email"); }
+      })();
+      return;
+    }
     const email: SupportEmail = { id: `EM-${Date.now()}`, to: emailForm.to.trim(), cc: emailForm.cc.trim(), bcc: emailForm.bcc.trim(), subject: emailForm.subject.trim(), body: emailForm.body, invoiceNo: emailForm.invoiceNo, attachment: emailForm.attachment, attachmentName: emailForm.attachmentName, status, folder: status === "Sent" ? "sent" : "drafts", date: new Date().toISOString() };
     setEmails((currentEmails) => [email, ...currentEmails]);
     setEmailForm({ to: "", cc: "", bcc: "", subject: "", body: "", invoiceNo: "", attachment: "", attachmentName: "" });
@@ -198,17 +377,17 @@ export function Support() {
   const renderTemplates = () => <><div className="row-actions" style={{ marginBottom: 14 }}><button className="btn btn-primary" onClick={() => { setSelectedTemplate(null); setTemplateForm({ name: "New template", subject: "", body: "" }); setModal("template"); }}>＋ New template</button></div><div className="grid g-2">{emailTemplates.map((template) => <div className="card" key={template.id}><div className="card-title">{template.name}</div><p style={{ fontWeight: 700 }}>{template.subject}</p><p style={{ whiteSpace: "pre-wrap", color: "var(--text-dim)", fontSize: 12 }}>{template.body}</p><div className="row-actions"><button className="btn btn-sm btn-primary" onClick={() => { setCommunicationTab("compose"); setEmailForm({ ...emailForm, subject: template.subject, body: template.body }); }}>Use template</button><button className="btn btn-sm" onClick={() => { setSelectedTemplate(template); setTemplateForm({ name: template.name, subject: template.subject, body: template.body }); setModal("template"); }}>Edit</button></div></div>)}</div></>;
   const renderEmail = () => <>{communicationTab === "compose" ? renderEmailCompose() : communicationTab === "templates" ? renderTemplates() : renderEmailMessages(communicationTab)}</>;
 
-  const sendSms = () => { const number = (document.getElementById("support-sms-number") as HTMLInputElement)?.value.trim(); const body = (document.getElementById("support-sms-body") as HTMLTextAreaElement)?.value.trim(); if (!number || !body) { showToast("Phone number and message are required"); return; } setSmsMessages((currentMessages) => [{ to: number, body, status: "Sent", date: new Date().toISOString() }, ...currentMessages]); setCommunicationTab("sent"); showToast("SMS recorded as sent"); };
+  const sendSms = () => { const number = (document.getElementById("support-sms-number") as HTMLInputElement)?.value.trim(); const body = (document.getElementById("support-sms-body") as HTMLTextAreaElement)?.value.trim(); if (!number || !body) { showToast("Phone number and message are required"); return; } if (!isSimulationMode()) { void (async () => { try { const supabase = createClient(); const { data, error } = await supabase.from("support_sms").insert({ to_number: number, message: body, status: "Queued" }).select("created_at, status").single(); if (error) throw error; setSmsMessages((current) => [{ to: number, body, status: data.status, date: data.created_at }, ...current]); setCommunicationTab("sent"); showToast("SMS queued; provider delivery is not configured"); } catch (error) { showToast(error instanceof Error ? error.message : "Could not queue SMS"); } })(); return; } setSmsMessages((currentMessages) => [{ to: number, body, status: "Sent", date: new Date().toISOString() }, ...currentMessages]); setCommunicationTab("sent"); showToast("SMS recorded as sent"); };
   const renderSms = () => communicationTab === "sent" ? <div className="card"><div className="card-title">Sent SMS</div>{smsMessages.length ? smsMessages.map((message, index) => <div className="email-row" key={`${message.date}-${index}`}><div><strong>{message.to}</strong><span>{message.body}</span></div><span className="email-status sent">{message.status}</span><small>{formatDate(message.date.slice(0, 10))}</small></div>) : <div className="empty">No SMS sent yet.</div>}</div> : <div className="card"><div className="card-title">Send SMS<small>Connect an SMS provider such as Twilio or Termii for live delivery.</small></div><div className="field"><label>To</label><input id="support-sms-number" placeholder="08061234567" /></div><div className="field"><label>Message</label><textarea id="support-sms-body" maxLength={320} style={{ minHeight: 160, width: "100%" }} placeholder="Type SMS" /></div><div className="row-actions"><span className="note">0 / 320</span><button className="btn btn-primary" onClick={sendSms}>Send SMS</button></div></div>;
 
-  const startCall = () => { const number = (document.getElementById("support-call-number") as HTMLInputElement)?.value.trim(); if (!number) { showToast("Enter a phone number"); return; } const call: SupportCall = { id: `CALL-${Date.now()}`, number, status: "In progress", result: "Active", date: new Date().toISOString(), started: Date.now(), duration: "00:00" }; setCalls((currentCalls) => [call, ...currentCalls]); setActiveCallId(call.id); setCallStarted(call.started || Date.now()); setModal("call"); showToast("In-app call started"); };
-  const endCall = () => { if (!activeCallId) return; setCalls((currentCalls) => currentCalls.map((call) => call.id === activeCallId ? { ...call, status: "Completed", result: "Completed", ended: Date.now(), duration: callDuration } : call)); setActiveCallId(null); setCallStarted(null); setCommunicationTab("log"); showToast("Call ended and saved to call log"); };
+  const startCall = () => { const number = (document.getElementById("support-call-number") as HTMLInputElement)?.value.trim(); if (!number) { showToast("Enter a phone number"); return; } if (!isSimulationMode()) { void (async () => { try { const started = Date.now(); const supabase = createClient(); const { data, error } = await supabase.from("support_calls").insert({ number, status: "In progress", notes: "Active", duration: "00:00", started_at: new Date(started).toISOString() }).select("id, created_at").single(); if (error) throw error; const call: SupportCall = { id: data.id, number, status: "In progress", result: "Active", date: data.created_at, started, duration: "00:00" }; setCalls((current) => [call, ...current]); setActiveCallId(call.id); setCallStarted(started); setModal("call"); showToast("Call log started; voice provider is not configured"); } catch (error) { showToast(error instanceof Error ? error.message : "Could not start call log"); } })(); return; } const call: SupportCall = { id: `CALL-${Date.now()}`, number, status: "In progress", result: "Active", date: new Date().toISOString(), started: Date.now(), duration: "00:00" }; setCalls((currentCalls) => [call, ...currentCalls]); setActiveCallId(call.id); setCallStarted(call.started || Date.now()); setModal("call"); showToast("In-app call started"); };
+  const endCall = () => { if (!activeCallId) return; const ended = Date.now(); if (!isSimulationMode()) { void (async () => { try { const supabase = createClient(); const { error } = await supabase.from("support_calls").update({ status: "Completed", notes: "Completed", ended_at: new Date(ended).toISOString(), duration: callDuration }).eq("id", activeCallId); if (error) throw error; setCalls((current) => current.map((call) => call.id === activeCallId ? { ...call, status: "Completed", result: "Completed", ended, duration: callDuration } : call)); setActiveCallId(null); setCallStarted(null); setCommunicationTab("log"); showToast("Call log completed"); } catch (error) { showToast(error instanceof Error ? error.message : "Could not end call log"); } })(); return; } setCalls((currentCalls) => currentCalls.map((call) => call.id === activeCallId ? { ...call, status: "Completed", result: "Completed", ended, duration: callDuration } : call)); setActiveCallId(null); setCallStarted(null); setCommunicationTab("log"); showToast("Call ended and saved to call log"); };
   const renderCall = () => communicationTab === "log" ? <div className="card"><div className="card-title">Call log</div>{calls.length ? calls.map((call) => <button className="email-row" style={{ width: "100%", textAlign: "left", background: "none", border: 0, cursor: "pointer" }} key={call.id} onClick={() => { setSelectedCall(call); setModal("call"); }}><div><strong>{call.number}</strong><span>{call.status} · {call.duration}</span></div><span className="email-status sent">{call.result}</span><small>{formatDate(call.date.slice(0, 10))}</small></button>) : <div className="empty">No calls logged yet.</div>}</div> : <div className="card"><div className="card-title">Internet call<small>Call stays inside the ERP interface. Live internet calling requires a voice/WebRTC provider and signalling service.</small></div><div className="field"><label>Number</label><input id="support-call-number" placeholder="08061234567" /></div><div className="row-actions"><button className="btn btn-primary" onClick={startCall}>☎ Call</button></div></div>;
 
-  const sendWhatsapp = () => { const number = (document.getElementById("support-wa-number") as HTMLInputElement)?.value.trim(); const body = (document.getElementById("support-wa-body") as HTMLTextAreaElement)?.value.trim(); const file = (document.getElementById("support-wa-file") as HTMLInputElement)?.files?.[0]; if (!number || (!body && !file)) { showToast("Number and message or attachment are required"); return; } const save = (attachment: string) => { const message: WhatsAppMessage = { id: `WA-${Date.now()}`, chatId: number, to: number, body, attachment, attachmentName: file?.name || "", from: "agent", status: "Sent", date: new Date().toISOString(), time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }; setWhatsappMessages((currentMessages) => [message, ...currentMessages]); setActiveWhatsappId(number); showToast("WhatsApp message saved in chat"); }; attachmentToDataUrl(file, save); };
+  const sendWhatsapp = () => { const number = (document.getElementById("support-wa-number") as HTMLInputElement)?.value.trim(); const body = (document.getElementById("support-wa-body") as HTMLTextAreaElement)?.value.trim(); const file = (document.getElementById("support-wa-file") as HTMLInputElement)?.files?.[0]; if (!number || (!body && !file)) { showToast("Number and message or attachment are required"); return; } const save = (attachment: string) => { if (!isSimulationMode()) { void (async () => { try { const supabase = createClient(); const { data, error } = await supabase.from("support_whatsapp").insert({ to_number: number, message: body || "Attachment", status: "Queued", attachment_url: attachment, attachment_name: file?.name || "" }).select("id, created_at, status").single(); if (error) throw error; setWhatsappMessages((current) => [{ id: data.id, chatId: number, to: number, body, attachment, attachmentName: file?.name || "", from: "agent", status: data.status, date: data.created_at, time: new Date(data.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }, ...current]); setActiveWhatsappId(number); showToast("WhatsApp record saved; provider delivery is not configured"); } catch (error) { showToast(error instanceof Error ? error.message : "Could not save WhatsApp message"); } })(); return; } const message: WhatsAppMessage = { id: `WA-${Date.now()}`, chatId: number, to: number, body, attachment, attachmentName: file?.name || "", from: "agent", status: "Sent", date: new Date().toISOString(), time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }; setWhatsappMessages((currentMessages) => [message, ...currentMessages]); setActiveWhatsappId(number); showToast("WhatsApp message saved in chat"); }; attachmentToDataUrl(file, save); };
   const renderWhatsapp = () => { const groups = whatsappMessages.reduce<Record<string, WhatsAppMessage[]>>((grouped, message) => { const key = message.chatId || message.to || message.from; grouped[key] = [...(grouped[key] || []), message]; return grouped; }, {}); if (communicationTab === "log") return <div className="card"><div className="card-title">WhatsApp chat log</div>{Object.keys(groups).length ? Object.keys(groups).map((key) => <button className="email-row" style={{ width: "100%", textAlign: "left", background: "none", border: 0, cursor: "pointer" }} key={key} onClick={() => { setActiveWhatsappId(key); setCommunicationTab("compose"); }}><div><strong>{key}</strong><span>{groups[key][groups[key].length - 1].body || "Attachment"}</span></div><span className="email-status sent">{groups[key].length} msg</span><small>{formatDate(groups[key][groups[key].length - 1].date.slice(0, 10))}</small></button>) : <div className="empty">No WhatsApp messages yet.</div>}</div>; const activeMessages = activeWhatsappId ? whatsappMessages.filter((message) => message.chatId === activeWhatsappId) : []; return <div className="card"><div className="card-title">WhatsApp<small>Messages stay inside the ERP. Connect WhatsApp Business Cloud API/webhooks for real inbound and outbound WhatsApp traffic.</small></div><div className="field"><label>To</label><input id="support-wa-number" defaultValue={activeWhatsappId} placeholder="2348061472153" /></div><div style={{ minHeight: 180, maxHeight: 320, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 12, margin: "10px 0" }}>{activeMessages.length ? activeMessages.map((message) => <div key={message.id} style={{ margin: "7px 0", textAlign: message.from === "customer" ? "left" : "right" }}><span style={{ display: "inline-block", maxWidth: "80%", padding: "8px 11px", borderRadius: 10, background: message.from === "customer" ? "var(--surface2)" : "var(--blue-dim)" }}>{message.attachment && <div>📎 {message.attachmentName}</div>}{message.body}</span><div className="note">{message.time}</div></div>) : <div className="empty">No messages in this chat yet.</div>}</div><div className="field"><label>Message</label><textarea id="support-wa-body" style={{ minHeight: 100, width: "100%" }} placeholder="Type WhatsApp message" /></div><div className="row-actions"><label className="btn" style={{ cursor: "pointer" }}>📎 Attach file<input id="support-wa-file" type="file" style={{ display: "none" }} /></label><button className="btn btn-primary" onClick={sendWhatsapp}>Send WhatsApp</button></div></div>; };
 
-  const saveTemplate = () => { if (!templateForm.name.trim()) return; const nextTemplates = selectedTemplate ? emailTemplates.map((template) => template === selectedTemplate ? { ...templateForm, id: template.id } : template) : [{ ...templateForm, id: `tpl-${Date.now()}` }, ...emailTemplates]; setEmailTemplates(nextTemplates); closeModal(); showToast(selectedTemplate ? "Template saved" : "Template added"); };
+  const saveTemplate = () => { if (!templateForm.name.trim()) return; if (!isSimulationMode()) { void (async () => { try { const supabase = createClient(); if (selectedTemplate) { const { error } = await supabase.from("support_email_templates").update({ name: templateForm.name, subject: templateForm.subject, body: templateForm.body }).eq("id", selectedTemplate.id); if (error) throw error; setEmailTemplates((current) => current.map((template) => template.id === selectedTemplate.id ? { ...templateForm, id: template.id } : template)); } else { const { data, error } = await supabase.from("support_email_templates").insert(templateForm).select("id").single(); if (error) throw error; setEmailTemplates((current) => [{ ...templateForm, id: data.id }, ...current]); } closeModal(); showToast(selectedTemplate ? "Template saved" : "Template added"); } catch (error) { showToast(error instanceof Error ? error.message : "Could not save template"); } })(); return; } const nextTemplates = selectedTemplate ? emailTemplates.map((template) => template === selectedTemplate ? { ...templateForm, id: template.id } : template) : [{ ...templateForm, id: `tpl-${Date.now()}` }, ...emailTemplates]; setEmailTemplates(nextTemplates); closeModal(); showToast(selectedTemplate ? "Template saved" : "Template added"); };
   const selectedSupportTab = currentTab.support || "tickets";
   const body = currentView === "email" ? renderEmail() : currentView === "sms" ? renderSms() : currentView === "call" ? renderCall() : currentView === "whatsapp" ? renderWhatsapp() : selectedSupportTab === "tickets" ? renderTickets() : selectedSupportTab === "chat" ? renderChat() : selectedSupportTab === "team" ? renderTeamChat() : renderKnowledgeBase();
   const modeTitle = currentView === "email" ? "Email" : currentView === "sms" ? "SMS" : currentView === "call" ? "Call" : currentView === "whatsapp" ? "WhatsApp" : "Support";
@@ -216,9 +395,10 @@ export function Support() {
   const modeTabs = currentView === "email" ? emailTabs : currentView === "sms" ? smsTabs : currentView === "call" ? callTabs : currentView === "whatsapp" ? whatsappTabs : [];
 
   return <>
-    <div className="view-head"><div><h1>{modeTitle}</h1><p>{modeDescription}</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{currentView === "email" && <button className="btn btn-primary" onClick={() => setCommunicationTab("compose")}>＋ Compose Email</button>}{currentView === "support" && selectedSupportTab === "tickets" && <button className="btn btn-primary" onClick={() => showToast("New ticket form is a stub in this prototype")}>＋ New ticket</button>}{currentView === "support" && selectedSupportTab === "kb" && <button className="btn btn-primary" onClick={() => { setKnowledgeForm({ question: "", answer: "" }); setModal("kb"); }}>＋ Add article</button>}</div></div>
+    <div className="view-head"><div><h1>{modeTitle}</h1><p>{modeDescription}</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{currentView === "email" && <button className="btn btn-primary" onClick={() => setCommunicationTab("compose")}>＋ Compose Email</button>}{currentView === "support" && selectedSupportTab === "tickets" && <button className="btn btn-primary" onClick={() => setModal("ticket")}>＋ New ticket</button>}{currentView === "support" && selectedSupportTab === "kb" && <button className="btn btn-primary" onClick={() => { setKnowledgeForm({ question: "", answer: "" }); setModal("kb"); }}>＋ Add article</button>}</div></div>
     {currentView === "support" ? <div className="tabs">{supportTabs.map(([key, label]) => <div className={`tab${selectedSupportTab === key ? " active" : ""}`} key={key} onClick={() => selectSupportTab(key)}>{label}</div>)}</div> : <div className="tabs">{modeTabs.map((tab) => <div className={`tab${communicationTab === tab ? " active" : ""}`} key={tab} onClick={() => setCommunicationTab(tab)}>{tab === "inbox" ? "Inbox" : tab === "sent" ? "Sent" : tab === "drafts" ? "Drafts" : tab === "templates" ? "Templates" : tab === "dialer" ? "Call" : tab === "log" ? currentView === "call" ? "Call log" : "Chat log" : "Compose"}</div>)}</div>}
     {body}
+    {modal === "ticket" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><form className="modal" onSubmit={saveTicket}><div className="modal-head"><h3>New ticket</h3><button className="x-btn" type="button" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Customer</label><select name="customer" required defaultValue=""><option value="">Choose a customer</option>{customerOptions}</select></div><div className="field"><label>Subject</label><input name="subject" required /></div><div className="field-row"><div className="field"><label>Priority</label><select name="priority" defaultValue="Normal">{ticketPriorities.map((priority) => <option key={priority}>{priority}</option>)}</select></div><div className="field"><label>Channel</label><select name="channel" defaultValue="Email"><option>Email</option><option>Phone</option><option>WhatsApp</option><option>Live chat</option><option>SMS</option></select></div></div></div><div className="modal-foot"><button className="btn" type="button" onClick={closeModal}>Cancel</button><button className="btn btn-primary" type="submit">Create ticket</button></div></form></div>}
     {modal === "email" && selectedEmail && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>{selectedEmail.subject}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="doc-grid"><div><div className="lbl">To</div>{selectedEmail.to}</div><div style={{ textAlign: "right" }}><div className="lbl">Status</div>{selectedEmail.status}</div></div><div className="lbl" style={{ marginTop: 14 }}>Message</div><div style={{ whiteSpace: "pre-wrap", lineHeight: 1.7, marginTop: 6 }}>{selectedEmail.body}</div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button>{selectedEmail.status === "Draft" && <button className="btn btn-primary" onClick={() => { setEmailForm({ to: selectedEmail.to, cc: selectedEmail.cc, bcc: selectedEmail.bcc, subject: selectedEmail.subject, body: selectedEmail.body, invoiceNo: selectedEmail.invoiceNo, attachment: selectedEmail.attachment, attachmentName: selectedEmail.attachmentName }); closeModal(); setCommunicationTab("compose"); }}>Edit draft</button>}</div></div></div>}
     {modal === "template" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>{selectedTemplate ? "Edit template" : "New template"}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Name</label><input value={templateForm.name} onChange={(event) => setTemplateForm({ ...templateForm, name: event.target.value })} /></div><div className="field"><label>Subject</label><input value={templateForm.subject} onChange={(event) => setTemplateForm({ ...templateForm, subject: event.target.value })} /></div><div className="field"><label>Body</label><textarea style={{ minHeight: 220, width: "100%" }} value={templateForm.body} onChange={(event) => setTemplateForm({ ...templateForm, body: event.target.value })} /></div><div className="note">Available variables: {"{{customer}}, {{invoice}}, {{tracking}}"}</div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Cancel</button><button className="btn btn-primary" onClick={saveTemplate}>Save template</button></div></div></div>}
     {modal === "kb" && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className="modal"><div className="modal-head"><h3>Add knowledge base article</h3><button className="x-btn" type="button" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Question</label><input value={knowledgeForm.question} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, question: event.target.value })} /></div><div className="field"><label>Answer</label><textarea rows={3} value={knowledgeForm.answer} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, answer: event.target.value })} /></div></div><div className="modal-foot"><button className="btn" type="button" onClick={closeModal}>Cancel</button><button className="btn btn-primary" type="button" onClick={saveKnowledgeArticle}>Add article</button></div></div></div>}

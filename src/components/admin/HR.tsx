@@ -5,6 +5,9 @@ import { jsPDF } from "jspdf";
 import { AdminTable } from "./AdminTable";
 import { useAppDispatch } from "@/context/AppContext";
 import { dashboardDB, jobPostingsStorageKey, type Applicant, type Employee, type JobPosting, type LeaveRequest } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
+import { persistSimulationState } from "@/lib/simulation-store";
 
 const hrTabs = [
   ["employees", "Employees"],
@@ -66,16 +69,50 @@ export function HR() {
   const [applicants, setApplicants] = useState<Applicant[]>(dashboardDB.applicants);
   const [jobPostings, setJobPostings] = useState<JobPosting[]>(dashboardDB.jobPostings);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(dashboardDB.leave);
-  const [modal, setModal] = useState<"employee" | "offer" | "leave" | "posting" | null>(null);
+  const [modal, setModal] = useState<"employee" | "newEmployee" | "offer" | "leave" | "posting" | null>(null);
+  const [employeeFormOpen, setEmployeeFormOpen] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [selectedOffer, setSelectedOffer] = useState<Employee | null>(null);
   const [selectedLeaveIndex, setSelectedLeaveIndex] = useState<number | null>(null);
   const [postingForm, setPostingForm] = useState({ title: "", location: "", type: "Full-time", desc: "" });
   const [leaveForm, setLeaveForm] = useState({ name: dashboardDB.employees[0]?.name || "", type: "Annual", from: "", to: "", reason: "" });
+  const [employeeForm, setEmployeeForm] = useState({ name: "", dept: "", role: "", email: "", phone: "", hired: new Date().toISOString().slice(0, 10) });
   const [toast, setToast] = useState("");
+
+  const loadHRData = async () => {
+    try {
+      const supabase = createClient();
+      const [employeeResult, applicantResult, leaveResult, postingResult] = await Promise.all([
+        supabase.from("employees").select("id, name, department, role_title, status, email, phone, hired_year, photo_url, eoy_votes, gross_pay, deductions").order("name"),
+        supabase.from("applicants").select("id, name, role_applied_for, stage").order("created_at", { ascending: false }),
+        supabase.from("leave_requests").select("id, employee_name, leave_type, from_date, to_date, status, reason, requested_on").order("requested_on", { ascending: false }),
+        supabase.from("career_postings").select("id, title, location, employment_type, description, status").eq("status", "Open").order("created_at", { ascending: false }),
+      ]);
+      const error = employeeResult.error || applicantResult.error || leaveResult.error || postingResult.error;
+      if (error) throw error;
+      const employees: Employee[] = (employeeResult.data || []).map((row) => ({ id: row.id, name: row.name, dept: row.department || "", role: row.role_title || "", status: row.status, email: row.email || "", phone: row.phone || "", hired: row.hired_year || "", photo: row.photo_url || "", eoyVotes: row.eoy_votes || 0 }));
+      const applicants: Applicant[] = (applicantResult.data || []).map((row) => ({ id: row.id, name: row.name, role: row.role_applied_for || "", stage: row.stage }));
+      const leave: LeaveRequest[] = (leaveResult.data || []).map((row) => ({ id: row.id, name: row.employee_name, type: row.leave_type, from: row.from_date, to: row.to_date, status: row.status, reason: row.reason || "", requestedOn: row.requested_on }));
+      const postings: JobPosting[] = (postingResult.data || []).map((row) => ({ id: row.id, title: row.title, location: row.location || "", type: row.employment_type || "Full-time", desc: row.description || "" }));
+      dashboardDB.employees.splice(0, dashboardDB.employees.length, ...employees);
+      dashboardDB.applicants.splice(0, dashboardDB.applicants.length, ...applicants);
+      dashboardDB.leave.splice(0, dashboardDB.leave.length, ...leave);
+      dashboardDB.jobPostings.splice(0, dashboardDB.jobPostings.length, ...postings);
+      setEmployees(employees);
+      setApplicants(applicants);
+      setLeaveRequests(leave);
+      setJobPostings(postings);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load HR data");
+    }
+  };
 
   useEffect(() => {
     dispatch({ type: "SET_CURRENT_VIEW", view: "hr" });
+    if (!isSimulationMode()) {
+      queueMicrotask(() => { void loadHRData(); });
+      return;
+    }
     try {
       const saved = JSON.parse(localStorage.getItem(jobPostingsStorageKey) || "null") as JobPosting[] | null;
       if (saved) {
@@ -99,17 +136,96 @@ export function HR() {
     setLeaveForm({ name: dashboardDB.employees[0]?.name || "", type: "Annual", from: "", to: "", reason: "" });
   };
 
+  const saveEmployee = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const employee: Employee = {
+      name: employeeForm.name.trim(),
+      dept: employeeForm.dept.trim(),
+      role: employeeForm.role.trim(),
+      status: "Active",
+      email: employeeForm.email.trim(),
+      phone: employeeForm.phone.trim(),
+      hired: employeeForm.hired,
+      photo: "",
+      eoyVotes: 0,
+    };
+    if (!employee.name || !employee.dept || !employee.role || !employee.email || !employee.phone || !employee.hired) {
+      showToast("Complete all employee details");
+      return;
+    }
+    if (dashboardDB.employees.some((current) => current.name.toLowerCase() === employee.name.toLowerCase() || current.email.toLowerCase() === employee.email.toLowerCase())) {
+      showToast("An employee with that name or email already exists");
+      return;
+    }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("employees").insert({ name: employee.name, department: employee.dept, role_title: employee.role, status: employee.status, email: employee.email, phone: employee.phone, hired_year: employee.hired, eoy_votes: 0 }).select("id").single();
+          if (error) throw error;
+          employee.id = data.id;
+          dashboardDB.employees.unshift(employee);
+          setEmployees([...dashboardDB.employees]);
+          setEmployeeFormOpen(false);
+          setEmployeeForm({ name: "", dept: "", role: "", email: "", phone: "", hired: new Date().toISOString().slice(0, 10) });
+          showToast(`${employee.name} added to employees`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not add employee"); }
+      })();
+      return;
+    }
+    dashboardDB.employees.unshift(employee);
+    persistSimulationState(dashboardDB);
+    setEmployees([...dashboardDB.employees]);
+    setEmployeeFormOpen(false);
+    setEmployeeForm({ name: "", dept: "", role: "", email: "", phone: "", hired: new Date().toISOString().slice(0, 10) });
+    showToast(`${employee.name} added to employees`);
+  };
+
   const openEmployee = (employee: Employee) => { setSelectedEmployee(employee); setModal("employee"); };
   const openOffer = (employee: Employee) => { setSelectedOffer(employee); setModal("offer"); };
   const openLeaveLetter = (index: number) => { setSelectedLeaveIndex(index); setModal("leave"); };
 
   const updateEmployeeStatus = (employee: Employee, status: string) => {
-    setEmployees((currentEmployees) => currentEmployees.map((currentEmployee) => currentEmployee === employee ? { ...currentEmployee, status } : currentEmployee));
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          if (!employee.id) throw new Error("Employee record is missing its database ID");
+          const supabase = createClient();
+          const { error } = await supabase.from("employees").update({ status }).eq("id", employee.id);
+          if (error) throw error;
+          employee.status = status;
+          setEmployees([...employees]);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update employee"); }
+      })();
+      return;
+    }
+    const current = dashboardDB.employees.find((item) => item.name === employee.name);
+    if (!current) return;
+    current.status = status;
+    persistSimulationState(dashboardDB);
+    setEmployees([...dashboardDB.employees]);
     showToast(`${employee.name} set to ${status}`);
   };
 
   const updateApplicantStage = (applicant: Applicant, stage: string) => {
-    setApplicants((currentApplicants) => currentApplicants.map((currentApplicant) => currentApplicant === applicant ? { ...currentApplicant, stage } : currentApplicant));
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          if (!applicant.id) throw new Error("Applicant record is missing its database ID");
+          const supabase = createClient();
+          const { error } = await supabase.from("applicants").update({ stage }).eq("id", applicant.id);
+          if (error) throw error;
+          applicant.stage = stage;
+          setApplicants([...applicants]);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update applicant"); }
+      })();
+      return;
+    }
+    const current = dashboardDB.applicants.find((item) => item.name === applicant.name);
+    if (!current) return;
+    current.stage = stage;
+    persistSimulationState(dashboardDB);
+    setApplicants([...dashboardDB.applicants]);
     showToast(`${applicant.name} moved to ${stage}`);
   };
 
@@ -117,9 +233,26 @@ export function HR() {
     const title = postingForm.title.trim();
     const location = postingForm.location.trim();
     if (!title || !location) { showToast("Add a title and location"); return; }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("career_postings").insert({ title, location, employment_type: postingForm.type, description: postingForm.desc.trim(), status: "Open" }).select("id").single();
+          if (error) throw error;
+          const posting: JobPosting = { id: data.id, title, location, type: postingForm.type, desc: postingForm.desc.trim() };
+          dashboardDB.jobPostings.unshift(posting);
+          setJobPostings([...dashboardDB.jobPostings]);
+          closeModal();
+          setActiveTab("postings");
+          showToast("Role posted");
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not post role"); }
+      })();
+      return;
+    }
     const posting = { title, location, type: postingForm.type, desc: postingForm.desc.trim() };
     dashboardDB.jobPostings.unshift(posting);
     localStorage.setItem(jobPostingsStorageKey, JSON.stringify(dashboardDB.jobPostings));
+    persistSimulationState(dashboardDB);
     setJobPostings([...dashboardDB.jobPostings]);
     closeModal();
     setActiveTab("postings");
@@ -127,37 +260,119 @@ export function HR() {
   };
 
   const removePosting = (index: number) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const posting = jobPostings[index];
+          if (!posting?.id) throw new Error("Posting record is missing its database ID");
+          const supabase = createClient();
+          const { error } = await supabase.from("career_postings").update({ status: "Closed" }).eq("id", posting.id);
+          if (error) throw error;
+          dashboardDB.jobPostings.splice(index, 1);
+          setJobPostings([...dashboardDB.jobPostings]);
+          showToast("Posting removed");
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not remove posting"); }
+      })();
+      return;
+    }
     dashboardDB.jobPostings.splice(index, 1);
     localStorage.setItem(jobPostingsStorageKey, JSON.stringify(dashboardDB.jobPostings));
+    persistSimulationState(dashboardDB);
     setJobPostings([...dashboardDB.jobPostings]);
     showToast("Posting removed");
   };
 
   const voteEmployee = (employee: Employee) => {
-    setEmployees((currentEmployees) => currentEmployees.map((currentEmployee) => currentEmployee === employee ? { ...currentEmployee, eoyVotes: (currentEmployee.eoyVotes || 0) + 1 } : currentEmployee));
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          if (!employee.id) throw new Error("Employee record is missing its database ID");
+          const supabase = createClient();
+          const nextVotes = (employee.eoyVotes || 0) + 1;
+          const { error } = await supabase.from("employees").update({ eoy_votes: nextVotes }).eq("id", employee.id);
+          if (error) throw error;
+          employee.eoyVotes = nextVotes;
+          setEmployees([...employees]);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not record vote"); }
+      })();
+      return;
+    }
+    const current = dashboardDB.employees.find((item) => item.name === employee.name);
+    if (!current) return;
+    current.eoyVotes = (current.eoyVotes || 0) + 1;
+    persistSimulationState(dashboardDB);
+    setEmployees([...dashboardDB.employees]);
     showToast(`Vote counted for ${employee.name}`);
   };
 
   const setLeaveStatus = (index: number, status: string) => {
-    setLeaveRequests((currentRequests) => currentRequests.map((request, currentIndex) => currentIndex === index ? { ...request, status } : request));
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const request = leaveRequests[index];
+          if (!request?.id) throw new Error("Leave request is missing its database ID");
+          const supabase = createClient();
+          const { error } = await supabase.from("leave_requests").update({ status }).eq("id", request.id);
+          if (error) throw error;
+          dashboardDB.leave.splice(index, 1, { ...request, status });
+          setLeaveRequests([...dashboardDB.leave]);
+          showToast(`Leave request ${status.toLowerCase()}`);
+          openLeaveLetter(index);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not update leave request"); }
+      })();
+      return;
+    }
+    const request = dashboardDB.leave[index];
+    if (!request) return;
+    dashboardDB.leave.splice(index, 1, { ...request, status });
+    persistSimulationState(dashboardDB);
+    setLeaveRequests([...dashboardDB.leave]);
     showToast(`Leave request ${status.toLowerCase()}`);
     openLeaveLetter(index);
   };
 
   const saveLeave = () => {
     if (!leaveForm.from || !leaveForm.to) { showToast("Add a start and end date"); return; }
-    setLeaveRequests((currentRequests) => [{ name: leaveForm.name, type: leaveForm.type, from: leaveForm.from, to: leaveForm.to, status: "Requested", reason: leaveForm.reason.trim() || "No reason given.", requestedOn: new Date().toISOString().slice(0, 10) }, ...currentRequests]);
+    if (leaveForm.to < leaveForm.from) { showToast("The end date must be on or after the start date"); return; }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { data, error } = await supabase.from("leave_requests").insert({ employee_name: leaveForm.name, leave_type: leaveForm.type, from_date: leaveForm.from, to_date: leaveForm.to, status: "Requested", reason: leaveForm.reason.trim() || "No reason given.", requested_on: new Date().toISOString().slice(0, 10) }).select("id").single();
+          if (error) throw error;
+          const request: LeaveRequest = { id: data.id, name: leaveForm.name, type: leaveForm.type, from: leaveForm.from, to: leaveForm.to, status: "Requested", reason: leaveForm.reason.trim() || "No reason given.", requestedOn: new Date().toISOString().slice(0, 10) };
+          dashboardDB.leave.unshift(request);
+          setLeaveRequests([...dashboardDB.leave]);
+          closeModal();
+          setActiveTab("leave");
+          showToast(`Leave application submitted for ${leaveForm.name}`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not submit leave application"); }
+      })();
+      return;
+    }
+    const request: LeaveRequest = { name: leaveForm.name, type: leaveForm.type, from: leaveForm.from, to: leaveForm.to, status: "Requested", reason: leaveForm.reason.trim() || "No reason given.", requestedOn: new Date().toISOString().slice(0, 10) };
+    dashboardDB.leave.unshift(request);
+    persistSimulationState(dashboardDB);
+    setLeaveRequests([...dashboardDB.leave]);
     closeModal();
     setActiveTab("leave");
     showToast(`Leave application submitted for ${leaveForm.name}`);
   };
 
   const uploadPhoto = (event: React.ChangeEvent<HTMLInputElement>, employee: Employee) => {
+    if (!isSimulationMode()) {
+      showToast("Employee photo storage is not configured for the live backend yet.");
+      return;
+    }
     const file = event.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      setEmployees((currentEmployees) => currentEmployees.map((currentEmployee) => currentEmployee === employee ? { ...currentEmployee, photo: String(reader.result) } : currentEmployee));
+      const current = dashboardDB.employees.find((item) => item.name === employee.name);
+      if (!current) return;
+      current.photo = String(reader.result);
+      persistSimulationState(dashboardDB);
+      setEmployees([...dashboardDB.employees]);
       showToast(`Photo updated for ${employee.name}`);
     };
     reader.readAsDataURL(file);
@@ -188,13 +403,14 @@ export function HR() {
   const renderEoy = () => { const ranked = [...employees].sort((first, second) => (second.eoyVotes || 0) - (first.eoyVotes || 0)); return <><div className="note">Anyone on the admin team can cast one vote per person. Most votes wins for the month.</div><AdminTable<Employee> columns={[{ key: "name", label: "Employee", render: (employee) => <>{employee.eoyVotes ? (ranked[0] === employee ? "⭐ " : "") : ""}{employee.name}</> }, { key: "dept", label: "Department" }, { key: "eoyVotes", label: "Votes", render: (employee) => String(employee.eoyVotes || 0) }, { key: "role", label: "", render: (employee) => <button className="btn btn-sm" onClick={() => voteEmployee(employee)}>Vote</button> }]} data={ranked} /></>; };
 
   const body = activeTab === "employees" ? renderEmployees() : activeTab === "recruitment" ? renderRecruitment() : activeTab === "postings" ? renderPostings() : activeTab === "leave" ? renderLeave() : renderEoy();
-  const action = activeTab === "employees" ? <button className="btn btn-primary" onClick={() => showToast("Add employee form is a stub in this prototype")}>＋ Add employee</button> : activeTab === "postings" ? <button className="btn btn-primary" onClick={() => setModal("posting")}>＋ Post a role</button> : activeTab === "leave" ? <button className="btn btn-primary" onClick={() => setModal("leave")}>＋ Apply for leave</button> : null;
+  const action = activeTab === "employees" ? <button className="btn btn-primary" onClick={() => setEmployeeFormOpen(true)}>＋ Add employee</button> : activeTab === "postings" ? <button className="btn btn-primary" onClick={() => setModal("posting")}>＋ Post a role</button> : activeTab === "leave" ? <button className="btn btn-primary" onClick={() => setModal("leave")}>＋ Apply for leave</button> : null;
   const selectedLeave = selectedLeaveIndex === null ? null : leaveRequests[selectedLeaveIndex];
 
   return <>
     <div className="view-head"><div><h1>HR &amp; Careers</h1><p>Employees, recruitment, careers postings and leave.</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{action}</div></div>
     <div className="tabs">{hrTabs.map(([key, label]) => <div className={`tab${activeTab === key ? " active" : ""}`} key={key} onClick={() => setActiveTab(key)}>{label}</div>)}</div>
     {body}
+    {employeeFormOpen && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setEmployeeFormOpen(false); }}><form className="modal" onSubmit={saveEmployee}><div className="modal-head"><h3>Add employee</h3><button className="x-btn" type="button" onClick={() => setEmployeeFormOpen(false)}>×</button></div><div className="modal-body"><div className="grid g-2"><div className="field"><label>Full name</label><input value={employeeForm.name} onChange={(event) => setEmployeeForm({ ...employeeForm, name: event.target.value })} required /></div><div className="field"><label>Department</label><input value={employeeForm.dept} onChange={(event) => setEmployeeForm({ ...employeeForm, dept: event.target.value })} required /></div><div className="field"><label>Role</label><input value={employeeForm.role} onChange={(event) => setEmployeeForm({ ...employeeForm, role: event.target.value })} required /></div><div className="field"><label>Email</label><input type="email" value={employeeForm.email} onChange={(event) => setEmployeeForm({ ...employeeForm, email: event.target.value })} required /></div><div className="field"><label>Phone</label><input value={employeeForm.phone} onChange={(event) => setEmployeeForm({ ...employeeForm, phone: event.target.value })} required /></div><div className="field"><label>Start date</label><input type="date" value={employeeForm.hired} onChange={(event) => setEmployeeForm({ ...employeeForm, hired: event.target.value })} required /></div></div></div><div className="modal-foot"><button className="btn" type="button" onClick={() => setEmployeeFormOpen(false)}>Cancel</button><button className="btn btn-primary" type="submit">Add employee</button></div></form></div>}
     {modal && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}><div className={modal === "employee" || modal === "offer" || modal === "leave" ? "modal doc-modal" : "modal"}>
       {modal === "employee" && selectedEmployee ? <><div className="modal-head"><h3>{selectedEmployee.name}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 16 }}><div style={{ position: "relative" }}>{selectedEmployee.photo ? <img id="emp-photo-preview" src={selectedEmployee.photo} alt="" style={{ width: 72, height: 72, borderRadius: 12, objectFit: "cover" }} /> : <div id="emp-photo-preview" style={{ width: 72, height: 72, borderRadius: 12, background: "var(--surface3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700, color: "var(--text-dim)" }}>{initials(selectedEmployee.name)}</div>}</div><div><label className="btn btn-sm">Upload photo<input type="file" accept="image/*" style={{ display: "none" }} onChange={(event) => uploadPhoto(event, selectedEmployee)} /></label><div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>Stored locally in this session only.</div></div></div><EmployeeDocument employee={selectedEmployee} /></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button></div></> : modal === "offer" && selectedOffer ? <><div className="modal-head"><h3>Offer letter, {selectedOffer.name}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><OfferLetter employee={selectedOffer} /></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button><button className="btn btn-primary" onClick={() => window.print()}>Print</button></div></> : modal === "leave" && selectedLeave ? <><div className="modal-head"><h3>{selectedLeave.status === "Requested" ? "Request for leave" : "Leave letter"}, {selectedLeave.name}</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><LeaveLetter leave={selectedLeave} /></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Close</button><button className="btn" onClick={() => downloadLeavePDF(selectedLeave)}>Download PDF</button><button className="btn btn-primary" onClick={() => window.print()}>Print</button></div></> : modal === "posting" ? <><div className="modal-head"><h3>Post a role</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Title</label><input placeholder="e.g. Fleet Dispatcher" value={postingForm.title} onChange={(event) => setPostingForm({ ...postingForm, title: event.target.value })} /></div><div className="grid g-2"><div className="field"><label>Location</label><input placeholder="e.g. Lagos" value={postingForm.location} onChange={(event) => setPostingForm({ ...postingForm, location: event.target.value })} /></div><div className="field"><label>Type</label><select value={postingForm.type} onChange={(event) => setPostingForm({ ...postingForm, type: event.target.value })}><option>Full-time</option><option>Part-time</option><option>Contract</option></select></div></div><div className="field"><label>Description</label><textarea rows={3} value={postingForm.desc} onChange={(event) => setPostingForm({ ...postingForm, desc: event.target.value })} /></div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Cancel</button><button className="btn btn-primary" onClick={savePosting}>Post role</button></div></> : <><div className="modal-head"><h3>Apply for leave</h3><button className="x-btn" onClick={closeModal}>×</button></div><div className="modal-body"><div className="field"><label>Employee</label><select value={leaveForm.name} onChange={(event) => setLeaveForm({ ...leaveForm, name: event.target.value })}>{dashboardDB.employees.map((employee) => <option key={employee.name}>{employee.name}</option>)}</select></div><div className="grid g-2"><div className="field"><label>Type</label><select value={leaveForm.type} onChange={(event) => setLeaveForm({ ...leaveForm, type: event.target.value })}>{leaveTypes.map((type) => <option key={type}>{type}</option>)}</select></div><div className="field" /><div className="field"><label>From</label><input type="date" value={leaveForm.from} onChange={(event) => setLeaveForm({ ...leaveForm, from: event.target.value })} /></div><div className="field"><label>To</label><input type="date" value={leaveForm.to} onChange={(event) => setLeaveForm({ ...leaveForm, to: event.target.value })} /></div></div><div className="field"><label>Reason</label><textarea rows={2} value={leaveForm.reason} onChange={(event) => setLeaveForm({ ...leaveForm, reason: event.target.value })} /></div></div><div className="modal-foot"><button className="btn" onClick={closeModal}>Cancel</button><button className="btn btn-primary" onClick={saveLeave}>Submit application</button></div></>}
     </div></div>}

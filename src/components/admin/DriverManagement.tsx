@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AdminTable } from "@/components/admin/AdminTable";
 import { dashboardDB } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
 import { isSimulationMode } from "@/lib/supabase/mode";
 import { persistSimulationState } from "@/lib/simulation-store";
 
@@ -73,13 +74,35 @@ export function DriverManagement() {
   const [addDriverOpen, setAddDriverOpen] = useState(false);
   const [toast, setToast] = useState("");
 
-  const updateDriverStatus = (name: string, status: string) => {
-    if (!isSimulationMode()) {
-      setToast("Driver status writes are not connected to the live backend yet.");
-      return;
+  const loadDrivers = async () => {
+    if (isSimulationMode()) return;
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.from("drivers").select("id, name, license_no, license_expiry, trips_completed, rating, status").order("name");
+      if (error) throw error;
+      setDrivers((data || []).map((driver) => ({ name: driver.name, license: driver.license_no || "", expiry: driver.license_expiry || "", trips: driver.trips_completed || 0, rating: Number(driver.rating) || 0, status: driver.status })));
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load drivers");
     }
+  };
+
+  useEffect(() => { queueMicrotask(() => { void loadDrivers(); }); }, []);
+
+  const updateDriverStatus = async (name: string, status: string) => {
     const driver = drivers.find((item) => item.name === name);
     if (!driver) return;
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { error } = await supabase.from("drivers").update({ status }).eq("name", name);
+        if (error) throw error;
+        await loadDrivers();
+        setToast(`${name} set to ${status}`);
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Could not update driver status");
+      }
+      return;
+    }
     driver.status = status;
     persistSimulationState(dashboardDB);
     setDrivers([...drivers]);
@@ -87,13 +110,21 @@ export function DriverManagement() {
     window.setTimeout(() => setToast(""), 2600);
   };
 
-  const setDriverRating = (name: string, rating: number) => {
-    if (!isSimulationMode()) {
-      setToast("Driver ratings are not connected to the live backend yet.");
-      return;
-    }
+  const setDriverRating = async (name: string, rating: number) => {
     const driver = drivers.find((item) => item.name === name);
     if (!driver) return;
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { error } = await supabase.from("drivers").update({ rating }).eq("name", name);
+        if (error) throw error;
+        await loadDrivers();
+        setToast(`${name} rated ${rating} stars`);
+      } catch (error) {
+        setToast(error instanceof Error ? error.message : "Could not update driver rating");
+      }
+      return;
+    }
     driver.rating = rating;
     persistSimulationState(dashboardDB);
     setDrivers([...drivers]);
@@ -103,14 +134,25 @@ export function DriverManagement() {
 
   const createDriver = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!isSimulationMode()) {
-      setToast("Driver creation is available in simulation mode only.");
-      return;
-    }
     const form = new FormData(event.currentTarget);
     const name = String(form.get("name") || "").trim();
     if (!name || dashboardDB.drivers.some((driver) => driver.name.toLowerCase() === name.toLowerCase())) {
       setToast(name ? "A driver with that name already exists." : "Driver name is required.");
+      return;
+    }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("drivers").insert({ name, license_no: String(form.get("license") || ""), license_expiry: String(form.get("expiry") || "") || null, status: String(form.get("status") || "Available"), trips_completed: 0, rating: 0 });
+          if (error) throw error;
+          await loadDrivers();
+          setAddDriverOpen(false);
+          setToast(`Driver ${name} added`);
+        } catch (error) {
+          setToast(error instanceof Error ? error.message : "Could not add driver");
+        }
+      })();
       return;
     }
     dashboardDB.drivers.push({

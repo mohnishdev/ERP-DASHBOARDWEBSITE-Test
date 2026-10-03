@@ -9,6 +9,7 @@ import { isSimulationMode } from "@/lib/supabase/mode";
 import { persistSimulationState, restoreSimulationState } from "@/lib/simulation-store";
 
 type CurrentUser = {
+  id?: string;
   email: string;
   name: string;
   role: string;

@@ -107,7 +107,20 @@ export function CustomerManagement() {
 
   const assignStaff = () => {
     if (customerDataState === "connected") {
-      showToast("Staff assignment will be enabled with staff-profile sync.");
+      const select = document.getElementById("cd-assign-staff") as HTMLSelectElement | null;
+      if (!select?.value || !selectedCustomer?.id) { showToast("Choose a customer and active staff member first"); return; }
+      void (async () => {
+        try {
+          const { error } = await createClient().rpc("assign_customer_staff", { target_customer_id: selectedCustomer.id, target_staff_name: select.value });
+          if (error) throw error;
+          const updated = { ...selectedCustomer, assignedTo: select.value };
+          const next = customers.map((customer) => customer.id === updated.id ? updated : customer);
+          dashboardDB.customers.splice(0, dashboardDB.customers.length, ...next);
+          setCustomers(next);
+          setSelectedCustomer(updated);
+          showToast(`${updated.name} assigned to ${select.value}`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not assign staff member"); }
+      })();
       return;
     }
     const select = document.getElementById("cd-assign-staff") as HTMLSelectElement | null;
@@ -124,7 +137,21 @@ export function CustomerManagement() {
 
   const linkLead = () => {
     if (customerDataState === "connected") {
-      showToast("Lead linking will be enabled with CRM integration.");
+      const select = document.getElementById("cd-assign-lead") as HTMLSelectElement | null;
+      if (!select?.value || !selectedCustomer?.id) { showToast("Choose a lead to link"); return; }
+      void (async () => {
+        try {
+          const { error } = await createClient().rpc("link_lead_to_customer", { target_lead_id: select.value, target_customer_id: selectedCustomer.id });
+          if (error) throw error;
+          const lead = dashboardDB.leads.find((item) => item.id === select.value);
+          if (lead) {
+            lead.linkedCustomer = selectedCustomer.name;
+            lead.linkedCustomerId = selectedCustomer.id;
+            lead.status = "Won";
+          }
+          showToast(`${lead?.company || "Lead"} linked to ${selectedCustomer.name}`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not link lead"); }
+      })();
       return;
     }
     const select = document.getElementById("cd-assign-lead") as HTMLSelectElement | null;
@@ -145,7 +172,24 @@ export function CustomerManagement() {
 
   const importLeads = () => {
     if (customerDataState === "connected") {
-      showToast("Lead imports will be enabled with CRM integration.");
+      if (!selectedLeadIds.length) { showToast("Select at least one lead"); return; }
+      void (async () => {
+        try {
+          const supabase = createClient();
+          for (const id of selectedLeadIds) {
+            const { error } = await supabase.rpc("convert_lead_to_customer", { target_lead_id: id });
+            if (error) throw error;
+          }
+          const { data, error } = await supabase.from("customers").select("id, name, type, contact, email, phone, credit_limit, balance, status, client_since, assigned_to").order("name");
+          if (error) throw error;
+          const refreshed: Customer[] = (data || []).map((row) => ({ id: row.id, name: row.name, type: row.type, contact: row.contact || row.phone || row.email || "", email: row.email || "", credit: Number(row.credit_limit) || 0, balance: Number(row.balance) || 0, since: row.client_since || "", status: row.status, assignedTo: row.assigned_to || undefined }));
+          dashboardDB.customers.splice(0, dashboardDB.customers.length, ...refreshed);
+          setCustomers(refreshed);
+          setSelectedLeadIds([]);
+          setImportOpen(false);
+          showToast(`${selectedLeadIds.length} customer(s) imported`);
+        } catch (error) { showToast(error instanceof Error ? error.message : "Could not import leads"); }
+      })();
       return;
     }
     if (!selectedLeadIds.length) {

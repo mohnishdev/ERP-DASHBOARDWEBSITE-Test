@@ -1,9 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { jsPDF } from "jspdf";
 import { AdminTable } from "./AdminTable";
 import { computeFinance, dashboardDB, fmtNaira, invoiceSubtotal, invoiceVat, quoteTotal, type Expense, type Invoice, type Payroll, type PurchaseOrder, type Quotation } from "@/lib/dashboard";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
+import { persistSimulationState } from "@/lib/simulation-store";
 
 const financeTabs = [
   ["overview", "Overview"],
@@ -106,7 +109,7 @@ export function Finance() {
   const [invoices, setInvoices] = useState<Invoice[]>(dashboardDB.invoices);
   const fin = computeFinance();
   const [activeTab, setActiveTab] = useState<(typeof financeTabs)[number][0]>("overview");
-  const [modal, setModal] = useState<"new" | "detail" | "expense" | "payroll" | "quotation" | "purchase" | "newExpense" | "newPayroll" | "newQuotation" | null>(null);
+  const [modal, setModal] = useState<"new" | "detail" | "expense" | "payroll" | "quotation" | "purchase" | "newExpense" | "newPayroll" | "newQuotation" | "newPurchase" | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [selectedExpense, setSelectedExpense] = useState<string | null>(null);
   const [selectedPayroll, setSelectedPayroll] = useState<Payroll | null>(null);
@@ -120,7 +123,46 @@ export function Finance() {
   const [expenseForm, setExpenseForm] = useState({ category: "", vendor: "", amount: "", date: "", description: "" });
   const [payrollForm, setPayrollForm] = useState({ name: dashboardDB.employees[0]?.name || "", role: dashboardDB.employees[0]?.role || "", gross: "", deductions: "" });
   const [quotationForm, setQuotationForm] = useState({ customer: "", contact: "", route: "", mode: "Trucks / Haulage", validUntil: "", description: "", amount: "" });
+  const [purchaseForm, setPurchaseForm] = useState({ supplier: "", items: "", total: "", date: "" });
   const [toast, setToast] = useState("");
+
+  const loadFinanceData = useCallback(async () => {
+    if (isSimulationMode()) return;
+    try {
+      const supabase = createClient();
+      const [invoiceResult, invoiceItemsResult, expenseResult, expenseItemsResult, payrollResult, purchaseResult, quotationResult, quotationItemsResult] = await Promise.all([
+        supabase.from("invoices").select("id, invoice_no, customer_name, amount, status, invoice_date, linked_booking_id, posted").order("invoice_date", { ascending: false }),
+        supabase.from("invoice_items").select("invoice_id, description, amount"),
+        supabase.from("expenses").select("id, category, vendor, amount, expense_date, status").order("expense_date", { ascending: false }),
+        supabase.from("expense_items").select("expense_id, description, amount"),
+        supabase.from("payroll_entries").select("employee_name, role_title, gross, deductions"),
+        supabase.from("purchase_orders").select("po_no, supplier, total, status, description, items_description, order_date, po_date").order("po_date", { ascending: false }),
+        supabase.from("quotations").select("id, ref, customer_name, contact, route, mode, quote_date, valid_until, status, amount").order("quote_date", { ascending: false }),
+        supabase.from("quotation_items").select("quotation_id, description, qty, rate"),
+      ]);
+      const error = invoiceResult.error || invoiceItemsResult.error || expenseResult.error || expenseItemsResult.error || payrollResult.error || purchaseResult.error || quotationResult.error || quotationItemsResult.error;
+      if (error) throw error;
+      const invoiceItems = invoiceItemsResult.data || [];
+      const expenseItems = expenseItemsResult.data || [];
+      const quotationItems = quotationItemsResult.data || [];
+      const invoices: Invoice[] = (invoiceResult.data || []).map((row) => ({ no: row.invoice_no, customer: row.customer_name, amount: Number(row.amount) || 0, status: row.status, date: row.invoice_date, linkedShipment: dashboardDB.bookings.find((booking) => booking.id === row.linked_booking_id)?.tracking || null, posted: row.posted, items: invoiceItems.filter((item) => item.invoice_id === row.id).map((item) => ({ desc: item.description, amount: Number(item.amount) || 0 })) }));
+      const expenses: Expense[] = (expenseResult.data || []).map((row) => ({ id: row.id, cat: row.category, vendor: row.vendor, amount: Number(row.amount) || 0, date: row.expense_date, status: row.status || "Paid", items: expenseItems.filter((item) => item.expense_id === row.id).map((item) => ({ desc: item.description, amount: Number(item.amount) || 0 })) }));
+      const payroll: Payroll[] = (payrollResult.data || []).map((row) => ({ name: row.employee_name, role: row.role_title, gross: Number(row.gross) || 0, deductions: Number(row.deductions) || 0 }));
+      const purchaseOrders: PurchaseOrder[] = (purchaseResult.data || []).map((row) => ({ no: row.po_no, supplier: row.supplier, total: Number(row.total) || 0, status: row.status, items: row.description || row.items_description || "", date: row.order_date || row.po_date }));
+      const quotations: Quotation[] = (quotationResult.data || []).map((row) => ({ ref: row.ref, customer: row.customer_name, contact: row.contact || "", route: row.route || "", mode: row.mode || "", date: row.quote_date, validUntil: row.valid_until || "", status: row.status, amount: Number(row.amount) || undefined, items: quotationItems.filter((item) => item.quotation_id === row.id).map((item) => ({ desc: item.description, qty: Number(item.qty) || 1, rate: Number(item.rate) || 0 })) }));
+      dashboardDB.invoices.splice(0, dashboardDB.invoices.length, ...invoices);
+      dashboardDB.expenses.splice(0, dashboardDB.expenses.length, ...expenses);
+      dashboardDB.payroll.splice(0, dashboardDB.payroll.length, ...payroll);
+      dashboardDB.purchaseOrders.splice(0, dashboardDB.purchaseOrders.length, ...purchaseOrders);
+      dashboardDB.quotations.splice(0, dashboardDB.quotations.length, ...quotations);
+      setInvoices(invoices);
+      setDataRevision((revision) => revision + 1);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not load finance data");
+    }
+  }, []);
+
+  useEffect(() => { queueMicrotask(() => { void loadFinanceData(); }); }, [loadFinanceData]);
 
   const closeModal = () => {
     setModal(null);
@@ -137,12 +179,13 @@ export function Finance() {
     setExpenseForm({ category: "", vendor: "", amount: "", date: "", description: "" });
     setPayrollForm({ name: dashboardDB.employees[0]?.name || "", role: dashboardDB.employees[0]?.role || "", gross: "", deductions: "" });
     setQuotationForm({ customer: "", contact: "", route: "", mode: "Trucks / Haulage", validUntil: "", description: "", amount: "" });
+    setPurchaseForm({ supplier: "", items: "", total: "", date: "" });
   };
 
-  const showToast = (message: string) => {
+  function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2600);
-  };
+  }
 
   const autofillFromTracking = () => {
     if (!tracking.trim()) {
@@ -160,7 +203,7 @@ export function Finance() {
     setHint(`Filled in from ${tracking}, ${booking.customer}.`);
   };
 
-  const saveInvoice = () => {
+  const saveInvoice = async () => {
     const value = Number(amount) || 0;
     if (!customer || !value) {
       showToast("Choose a customer and add an amount");
@@ -171,8 +214,42 @@ export function Finance() {
       showToast("An invoice already exists for that shipment");
       return;
     }
+    const invoiceNo = `INV-${String(nextInvoiceSequence++).padStart(5, "0")}`;
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        let linkedBookingId: string | null = null;
+        if (linkedTracking) {
+          const { data: booking, error } = await supabase.from("bookings").select("id").eq("tracking_no", linkedTracking).maybeSingle();
+          if (error) throw error;
+          if (!booking) { showToast("No shipment found for that tracking number"); return; }
+          linkedBookingId = booking.id;
+        }
+        const { data: customerRecord, error: customerError } = await supabase.from("customers").select("id").eq("name", customer).maybeSingle();
+        if (customerError) throw customerError;
+        const invoiceAmount = value;
+        const itemDescription = description.trim() || "Freight charges";
+        const { data: savedInvoice, error: invoiceError } = await supabase.from("invoices").insert({ invoice_no: invoiceNo, customer_id: customerRecord?.id || null, customer_name: customer, amount: invoiceAmount, status: "Pending", invoice_date: new Date().toISOString().slice(0, 10), linked_booking_id: linkedBookingId }).select("id").single();
+        if (invoiceError) throw invoiceError;
+        const { error: itemError } = await supabase.from("invoice_items").insert({ invoice_id: savedInvoice.id, description: itemDescription, amount: invoiceAmount });
+        if (itemError) {
+          await supabase.from("invoices").delete().eq("id", savedInvoice.id);
+          throw itemError;
+        }
+        const invoice: Invoice = { no: invoiceNo, customer, amount: invoiceAmount, status: "Pending", date: new Date().toISOString().slice(0, 10), linkedShipment: linkedTracking, items: [{ desc: itemDescription, amount: invoiceAmount }] };
+        dashboardDB.invoices.unshift(invoice);
+        setInvoices([...dashboardDB.invoices]);
+        closeModal();
+        showToast(`Invoice ${invoice.no} created`);
+        setSelectedInvoice(invoice);
+        setModal("detail");
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "Could not create invoice");
+      }
+      return;
+    }
     const invoice: Invoice = {
-      no: `INV-${String(nextInvoiceSequence++).padStart(5, "0")}`,
+      no: invoiceNo,
       customer,
       amount: value,
       status: "Pending",
@@ -181,6 +258,7 @@ export function Finance() {
       items: [{ desc: description.trim() || "Freight charges", amount: value }],
     };
     dashboardDB.invoices.unshift(invoice);
+    persistSimulationState(dashboardDB);
     setInvoices([...dashboardDB.invoices]);
     closeModal();
     showToast(`Invoice ${invoice.no} created, visible in ${customer}’s account`);
@@ -194,6 +272,29 @@ export function Finance() {
     if (!category || !amountValue) { showToast("Add a category and an amount"); return; }
     const descriptionValue = expenseForm.description.trim() || category;
     const date = expenseForm.date || new Date().toISOString().slice(0, 10);
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const vendor = expenseForm.vendor.trim() || "Unspecified vendor";
+          const { data: savedExpense, error } = await supabase.from("expenses").insert({ category, vendor, amount: amountValue, expense_date: date, status: "Unpaid" }).select("id").single();
+          if (error) throw error;
+          const { error: itemError } = await supabase.from("expense_items").insert({ expense_id: savedExpense.id, description: descriptionValue, amount: amountValue });
+          if (itemError) {
+            await supabase.from("expenses").delete().eq("id", savedExpense.id);
+            throw itemError;
+          }
+          dashboardDB.expenses.unshift({ cat: category, vendor, amount: amountValue, date, status: "Unpaid", items: [{ desc: descriptionValue, amount: amountValue }] });
+          setDataRevision((revision) => revision + 1);
+          closeModal();
+          setActiveTab("expenses");
+          showToast("Expense logged");
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not log expense");
+        }
+      })();
+      return;
+    }
     const existing = dashboardDB.expenses.find((expense) => expense.cat.toLowerCase() === category.toLowerCase());
     if (existing) {
       existing.items.push({ desc: descriptionValue, amount: amountValue });
@@ -203,6 +304,7 @@ export function Finance() {
     } else {
       dashboardDB.expenses.unshift({ cat: category, vendor: expenseForm.vendor.trim(), amount: amountValue, date, status: "Unpaid", items: [{ desc: descriptionValue, amount: amountValue }] });
     }
+    persistSimulationState(dashboardDB);
     setDataRevision((revision) => revision + 1);
     closeModal();
     setActiveTab("expenses");
@@ -212,6 +314,27 @@ export function Finance() {
   const saveNewPayroll = () => {
     const gross = Number(payrollForm.gross) || 0;
     if (!payrollForm.name || !gross) { showToast("Choose an employee and add a gross pay amount"); return; }
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const values = { employee_name: payrollForm.name, role_title: payrollForm.role.trim(), gross, deductions: Number(payrollForm.deductions) || 0 };
+          const { error } = await supabase.from("payroll_entries").upsert(values, { onConflict: "employee_name" });
+          if (error) throw error;
+          const existingIndex = dashboardDB.payroll.findIndex((entry) => entry.name === payrollForm.name);
+          const row: Payroll = { name: values.employee_name, role: values.role_title, gross: values.gross, deductions: values.deductions };
+          if (existingIndex >= 0) dashboardDB.payroll.splice(existingIndex, 1, row);
+          else dashboardDB.payroll.unshift(row);
+          setDataRevision((revision) => revision + 1);
+          closeModal();
+          setActiveTab("payroll");
+          showToast(`Payroll entry saved for ${payrollForm.name}`);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not save payroll entry");
+        }
+      })();
+      return;
+    }
     const existing = dashboardDB.payroll.find((entry) => entry.name === payrollForm.name);
     if (existing) {
       existing.role = payrollForm.role.trim();
@@ -220,6 +343,7 @@ export function Finance() {
     } else {
       dashboardDB.payroll.unshift({ name: payrollForm.name, role: payrollForm.role.trim(), gross, deductions: Number(payrollForm.deductions) || 0 });
     }
+    persistSimulationState(dashboardDB);
     setDataRevision((revision) => revision + 1);
     closeModal();
     setActiveTab("payroll");
@@ -232,6 +356,30 @@ export function Finance() {
     const descriptionValue = quotationForm.description.trim();
     if (!customerName || !route || !descriptionValue) { showToast("Add a customer, route and description"); return; }
     const sequence = dashboardDB.quotations.reduce((highest, quotation) => Math.max(highest, Number(quotation.ref.replace("QUO-", "")) || 0), 1042) + 1;
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const ref = `QUO-${String(sequence).padStart(4, "0")}`;
+          const rate = Number(quotationForm.amount) || 0;
+          const { data: savedQuotation, error } = await supabase.from("quotations").insert({ ref, customer_name: customerName, contact: quotationForm.contact.trim(), route, mode: quotationForm.mode, quote_date: new Date().toISOString().slice(0, 10), valid_until: quotationForm.validUntil || new Date().toISOString().slice(0, 10), status: "Pending", amount: rate }).select("id").single();
+          if (error) throw error;
+          const { error: itemError } = await supabase.from("quotation_items").insert({ quotation_id: savedQuotation.id, description: descriptionValue, qty: 1, rate });
+          if (itemError) {
+            await supabase.from("quotations").delete().eq("id", savedQuotation.id);
+            throw itemError;
+          }
+          dashboardDB.quotations.unshift({ ref, customer: customerName, contact: quotationForm.contact.trim(), route, mode: quotationForm.mode, date: new Date().toISOString().slice(0, 10), validUntil: quotationForm.validUntil, status: "Pending", amount: rate, items: [{ desc: descriptionValue, qty: 1, rate }] });
+          setDataRevision((revision) => revision + 1);
+          closeModal();
+          setActiveTab("quotations");
+          showToast(`Quotation ${ref} saved`);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not save quotation");
+        }
+      })();
+      return;
+    }
     const quotation: Quotation = {
       ref: `QUO-${String(sequence).padStart(4, "0")}`,
       customer: customerName,
@@ -244,17 +392,140 @@ export function Finance() {
       items: [{ desc: descriptionValue, qty: 1, rate: Number(quotationForm.amount) || 0 }],
     };
     dashboardDB.quotations.unshift(quotation);
+    persistSimulationState(dashboardDB);
     setDataRevision((revision) => revision + 1);
     closeModal();
     setActiveTab("quotations");
     showToast(`Quotation ${quotation.ref} saved`);
   };
 
+  const saveNewPurchaseOrder = () => {
+    const supplier = purchaseForm.supplier.trim();
+    const items = purchaseForm.items.trim();
+    const total = Number(purchaseForm.total) || 0;
+    if (!supplier || !items || total <= 0) {
+      showToast("Add a supplier, item details and a total greater than zero");
+      return;
+    }
+    const sequence = dashboardDB.purchaseOrders.reduce((highest, purchase) => Math.max(highest, Number(purchase.no.replace("PO-", "")) || 0), 116) + 1;
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const purchaseOrder: PurchaseOrder = { no: `PO-${String(sequence).padStart(4, "0")}`, supplier, total, status: "Pending", items, date: purchaseForm.date || new Date().toISOString().slice(0, 10) };
+          const { error } = await supabase.from("purchase_orders").insert({ po_no: purchaseOrder.no, supplier, total, status: "Pending", items_description: items, description: items, po_date: purchaseOrder.date, order_date: purchaseOrder.date });
+          if (error) throw error;
+          dashboardDB.purchaseOrders.unshift(purchaseOrder);
+          setDataRevision((revision) => revision + 1);
+          closeModal();
+          setActiveTab("purchase");
+          showToast(`Purchase order ${purchaseOrder.no} created`);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not create purchase order");
+        }
+      })();
+      return;
+    }
+    const purchaseOrder: PurchaseOrder = {
+      no: `PO-${String(sequence).padStart(4, "0")}`,
+      supplier,
+      total,
+      status: "Pending",
+      items,
+      date: purchaseForm.date || new Date().toISOString().slice(0, 10),
+    };
+    dashboardDB.purchaseOrders.unshift(purchaseOrder);
+    persistSimulationState(dashboardDB);
+    setDataRevision((revision) => revision + 1);
+    closeModal();
+    setActiveTab("purchase");
+    showToast(`Purchase order ${purchaseOrder.no} created`);
+  };
+
   const updateInvoiceStatus = (invoice: Invoice, status: string) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("invoices").update({ status, posted: status === "Paid" }).eq("invoice_no", invoice.no);
+          if (error) throw error;
+          invoice.status = status;
+          if (status === "Paid" && !invoice.paidDate) invoice.paidDate = new Date().toISOString().slice(0, 10);
+          if (status !== "Paid") invoice.paidDate = null;
+          setInvoices([...dashboardDB.invoices]);
+          setDataRevision((revision) => revision + 1);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not update invoice");
+        }
+      })();
+      return;
+    }
     invoice.status = status;
     if (status === "Paid" && !invoice.paidDate) invoice.paidDate = new Date().toISOString().slice(0, 10);
     if (status !== "Paid") invoice.paidDate = null;
+    persistSimulationState(dashboardDB);
     setInvoices([...dashboardDB.invoices]);
+  };
+
+  const updateExpenseStatus = (expense: Expense, status: string) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          if (!expense.id) throw new Error("Could not locate the expense record");
+          const { error } = await supabase.from("expenses").update({ status }).eq("id", expense.id);
+          if (error) throw error;
+          expense.status = status;
+          setDataRevision((revision) => revision + 1);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not update expense");
+        }
+      })();
+      return;
+    }
+    expense.status = status;
+    persistSimulationState(dashboardDB);
+    setDataRevision((revision) => revision + 1);
+  };
+
+  const updatePurchaseStatus = (purchase: PurchaseOrder, status: string) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("purchase_orders").update({ status }).eq("po_no", purchase.no);
+          if (error) throw error;
+          purchase.status = status;
+          setDataRevision((revision) => revision + 1);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not update purchase order");
+        }
+      })();
+      return;
+    }
+    purchase.status = status;
+    persistSimulationState(dashboardDB);
+    setDataRevision((revision) => revision + 1);
+  };
+
+  const updateQuotationStatus = (quotation: Quotation, status: string) => {
+    if (!isSimulationMode()) {
+      void (async () => {
+        try {
+          const supabase = createClient();
+          const { error } = await supabase.from("quotations").update({ status }).eq("ref", quotation.ref);
+          if (error) throw error;
+          quotation.status = status;
+          setDataRevision((revision) => revision + 1);
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not update quotation");
+        }
+      })();
+      return;
+    }
+    quotation.status = status;
+    persistSimulationState(dashboardDB);
+    setDataRevision((revision) => revision + 1);
   };
 
   const downloadInvoice = (invoice: Invoice) => {
@@ -305,18 +576,18 @@ export function Finance() {
 
   const renderInvoiceTab = () => <AdminTable<Invoice> columns={[{ key: "no", label: "Invoice no.", render: (invoice) => <span className="mono link-cell" onClick={() => { setSelectedInvoice(invoice); setModal("detail"); }}>{invoice.no}</span> }, { key: "customer", label: "Customer" }, { key: "amount", label: "Amount", render: (invoice) => fmtNaira(invoice.amount) }, { key: "date", label: "Date", render: (invoice) => formatDate(invoice.date) }, { key: "status", label: "Status", render: (invoice) => <select className="switch-select" value={invoice.status} onChange={(event) => updateInvoiceStatus(invoice, event.target.value)}>{invoiceStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={invoices} />;
 
-  const renderExpenseTab = () => <AdminTable<Expense> columns={[{ key: "cat", label: "Category", render: (expense) => <span className="link-cell" onClick={() => { setSelectedExpense(expense.cat); setModal("expense"); }}>{expense.cat}</span> }, { key: "vendor", label: "Vendor" }, { key: "amount", label: "Amount", render: (expense) => fmtNaira(expense.amount) }, { key: "date", label: "Date", render: (expense) => formatDate(expense.date) }, { key: "status", label: "Status", render: (expense) => <select className="switch-select" value={expense.status || "Unpaid"} onChange={(event) => { expense.status = event.target.value; setInvoices([...dashboardDB.invoices]); }}>{expenseStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={dashboardDB.expenses} />;
+  const renderExpenseTab = () => <AdminTable<Expense> columns={[{ key: "cat", label: "Category", render: (expense) => <span className="link-cell" onClick={() => { setSelectedExpense(expense.cat); setModal("expense"); }}>{expense.cat}</span> }, { key: "vendor", label: "Vendor" }, { key: "amount", label: "Amount", render: (expense) => fmtNaira(expense.amount) }, { key: "date", label: "Date", render: (expense) => formatDate(expense.date) }, { key: "status", label: "Status", render: (expense) => <select className="switch-select" value={expense.status || "Unpaid"} onChange={(event) => updateExpenseStatus(expense, event.target.value)}>{expenseStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={dashboardDB.expenses} />;
 
   const renderPayrollTab = () => <AdminTable<Payroll> columns={[{ key: "name", label: "Employee", render: (payroll) => <span className="link-cell" onClick={() => { setSelectedPayroll(payroll); setModal("payroll"); }}>{payroll.name}</span> }, { key: "role", label: "Role" }, { key: "gross", label: "Gross", render: (payroll) => fmtNaira(payroll.gross) }, { key: "deductions", label: "Deductions", render: (payroll) => fmtNaira(payroll.deductions) }, { key: "gross", label: "Net", render: (payroll) => fmtNaira(payroll.gross - payroll.deductions) }]} data={dashboardDB.payroll} />;
 
-  const renderPurchaseTab = () => <AdminTable<PurchaseOrder> columns={[{ key: "no", label: "PO no.", render: (purchase) => <span className="mono link-cell" onClick={() => { setSelectedPurchase(purchase); setModal("purchase"); }}>{purchase.no}</span> }, { key: "supplier", label: "Supplier" }, { key: "total", label: "Total", render: (purchase) => fmtNaira(purchase.total) }, { key: "date", label: "Date", render: (purchase) => formatDate(purchase.date) }, { key: "status", label: "Status", render: (purchase) => <select className="switch-select" value={purchase.status} onChange={(event) => { purchase.status = event.target.value; setInvoices([...dashboardDB.invoices]); }}>{poStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={dashboardDB.purchaseOrders} />;
+  const renderPurchaseTab = () => <AdminTable<PurchaseOrder> columns={[{ key: "no", label: "PO no.", render: (purchase) => <span className="mono link-cell" onClick={() => { setSelectedPurchase(purchase); setModal("purchase"); }}>{purchase.no}</span> }, { key: "supplier", label: "Supplier" }, { key: "total", label: "Total", render: (purchase) => fmtNaira(purchase.total) }, { key: "date", label: "Date", render: (purchase) => formatDate(purchase.date) }, { key: "status", label: "Status", render: (purchase) => <select className="switch-select" value={purchase.status} onChange={(event) => updatePurchaseStatus(purchase, event.target.value)}>{poStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={dashboardDB.purchaseOrders} />;
 
-  const renderQuotationTab = () => <AdminTable<Quotation> columns={[{ key: "ref", label: "Reference", render: (quotation) => <span className="mono link-cell" onClick={() => { setSelectedQuotation(quotation); setModal("quotation"); }}>{quotation.ref}</span> }, { key: "customer", label: "Customer" }, { key: "route", label: "Route" }, { key: "amount", label: "Amount", render: (quotation) => fmtNaira(quotation.amount ?? quoteTotal(quotation).total) }, { key: "status", label: "Status", render: (quotation) => <select className="switch-select" value={quotation.status} onChange={(event) => { quotation.status = event.target.value; setInvoices([...dashboardDB.invoices]); }}>{quotationStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={dashboardDB.quotations} />;
+  const renderQuotationTab = () => <AdminTable<Quotation> columns={[{ key: "ref", label: "Reference", render: (quotation) => <span className="mono link-cell" onClick={() => { setSelectedQuotation(quotation); setModal("quotation"); }}>{quotation.ref}</span> }, { key: "customer", label: "Customer" }, { key: "route", label: "Route" }, { key: "amount", label: "Amount", render: (quotation) => fmtNaira(quotation.amount ?? quoteTotal(quotation).total) }, { key: "status", label: "Status", render: (quotation) => <select className="switch-select" value={quotation.status} onChange={(event) => updateQuotationStatus(quotation, event.target.value)}>{quotationStatuses.map((status) => <option value={status} key={status}>{status}</option>)}</select> }]} data={dashboardDB.quotations} />;
 
   const body = activeTab === "overview" ? renderOverview() : activeTab === "invoices" ? renderInvoiceTab() : activeTab === "expenses" ? renderExpenseTab() : activeTab === "payroll" ? renderPayrollTab() : activeTab === "purchase" ? renderPurchaseTab() : renderQuotationTab();
 
   return <>
-    <div className="view-head"><div><h1>Finance</h1><p>Accounts, invoicing, payroll, purchase orders and quotations.</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{activeTab === "invoices" && <button className="btn btn-primary" onClick={() => setModal("new")}><span aria-hidden="true">+</span> New invoice</button>}{activeTab === "expenses" && <button className="btn btn-primary" onClick={() => setModal("newExpense")}>＋ New expense</button>}{activeTab === "payroll" && <button className="btn btn-primary" onClick={() => setModal("newPayroll")}>＋ New payroll entry</button>}{activeTab === "purchase" && <button className="btn btn-primary" onClick={() => showToast("New PO form is a stub in this prototype")}>＋ New purchase order</button>}{activeTab === "quotations" && <button className="btn btn-primary" onClick={() => setModal("newQuotation")}>＋ New quotation</button>}</div></div>
+    <div className="view-head"><div><h1>Finance</h1><p>Accounts, invoicing, payroll, purchase orders and quotations.</p></div><div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>{activeTab === "invoices" && <button className="btn btn-primary" onClick={() => setModal("new")}><span aria-hidden="true">+</span> New invoice</button>}{activeTab === "expenses" && <button className="btn btn-primary" onClick={() => setModal("newExpense")}>＋ New expense</button>}{activeTab === "payroll" && <button className="btn btn-primary" onClick={() => setModal("newPayroll")}>＋ New payroll entry</button>}{activeTab === "purchase" && <button className="btn btn-primary" onClick={() => setModal("newPurchase")}>＋ New purchase order</button>}{activeTab === "quotations" && <button className="btn btn-primary" onClick={() => setModal("newQuotation")}>＋ New quotation</button>}</div></div>
     <div className="tabs">{financeTabs.map(([key, label]) => <div className={`tab${activeTab === key ? " active" : ""}`} key={key} onClick={() => setActiveTab(key)}>{label}</div>)}</div>
     {body}
     {modal && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
@@ -365,6 +636,14 @@ export function Finance() {
             <div className="grid g-3"><div className="field" style={{ gridColumn: "span 2" }}><label>Description</label><input value={quotationForm.description} onChange={(event) => setQuotationForm({ ...quotationForm, description: event.target.value })} /></div><div className="field"><label>Amount</label><input type="number" min="0" step="1" value={quotationForm.amount} onChange={(event) => setQuotationForm({ ...quotationForm, amount: event.target.value })} /></div></div>
           </div>
           <div className="modal-foot"><button className="btn" type="button" onClick={closeModal}>Cancel</button><button className="btn btn-primary" type="button" onClick={saveNewQuotation}>Save quotation</button></div>
+        </> : modal === "newPurchase" ? <>
+          <div className="modal-head"><h3>New purchase order</h3><button className="x-btn" type="button" onClick={closeModal}>×</button></div>
+          <div className="modal-body"><div className="grid g-2">
+            <div className="field"><label>Supplier</label><input value={purchaseForm.supplier} onChange={(event) => setPurchaseForm({ ...purchaseForm, supplier: event.target.value })} /></div>
+            <div className="field"><label>Total (₦)</label><input type="number" min="1" step="1" value={purchaseForm.total} onChange={(event) => setPurchaseForm({ ...purchaseForm, total: event.target.value })} /></div>
+            <div className="field"><label>Date</label><input type="date" value={purchaseForm.date} onChange={(event) => setPurchaseForm({ ...purchaseForm, date: event.target.value })} /></div>
+          </div><div className="field"><label>Items</label><textarea rows={3} value={purchaseForm.items} onChange={(event) => setPurchaseForm({ ...purchaseForm, items: event.target.value })} /></div></div>
+          <div className="modal-foot"><button className="btn" type="button" onClick={closeModal}>Cancel</button><button className="btn btn-primary" type="button" onClick={saveNewPurchaseOrder}>Save purchase order</button></div>
         </> : modal === "detail" && selectedInvoice ? <>
           <div className="modal-head"><h3>{selectedInvoice.no}</h3><button className="x-btn" onClick={closeModal}>×</button></div>
           <div className="modal-body"><InvoiceDocument invoice={selectedInvoice} /></div>

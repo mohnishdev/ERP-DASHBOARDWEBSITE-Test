@@ -25,6 +25,7 @@ export type Booking = {
 };
 
 export type Manifest = {
+  id?: string;
   no: string;
   date: string;
   driver: string;
@@ -63,6 +64,7 @@ export type Invoice = {
 };
 
 export type Expense = {
+  id?: string;
   cat: string;
   vendor: string;
   amount: number;
@@ -79,6 +81,7 @@ export type Payroll = {
 };
 
 export type Employee = {
+  id?: string;
   name: string;
   dept: string;
   role: string;
@@ -91,12 +94,14 @@ export type Employee = {
 };
 
 export type Applicant = {
+  id?: string;
   name: string;
   role: string;
   stage: string;
 };
 
 export type JobPosting = {
+  id?: string;
   title: string;
   location: string;
   type: string;
@@ -104,6 +109,7 @@ export type JobPosting = {
 };
 
 export type LeaveRequest = {
+  id?: string;
   name: string;
   type: string;
   from: string;
@@ -116,7 +122,7 @@ export type LeaveRequest = {
 export type SupportMessage = { from: string; text: string; time: string; img?: string; fileName?: string; automated?: boolean };
 export type SupportTeamMessage = { who: string; text: string; time: string; img?: string; fileName?: string };
 export type SupportChat = { id: string; visitor: string; lastSeen?: string; status: string; ticketId: string | null; messages: SupportMessage[]; waitingForAgent?: boolean; humanTookOver?: boolean; clearedIndex?: number };
-export type SupportTicket = { id: string; customer: string; subject: string; priority: string; status: string; channel: string; opened: string; closed: string };
+export type SupportTicket = { id: string; dbId?: string; customer: string; subject: string; priority: string; status: string; channel: string; opened: string; closed: string };
 export type SupportEmail = { id: string; to: string; from?: string; cc: string; bcc: string; subject: string; body: string; invoiceNo: string; attachment: string; attachmentName: string; status: string; folder: string; date: string };
 export type EmailTemplate = { id: string; name: string; subject: string; body: string };
 export type SupportSms = { to: string; body: string; status: string; date: string };
@@ -190,6 +196,7 @@ type InventoryItem = {
 };
 export type Lead = {
   id: string;
+  assignedToId?: string;
   company: string;
   contactName: string;
   jobTitle: string;
@@ -239,8 +246,8 @@ export type Customer = {
   };
 };
 export const jobPostingsStorageKey = "jaad_job_postings";
-export type AdminUser = { name: string; email: string; role: string; status: string };
-export type AdminRole = { role: string; desc: string; users: number; perms: string[] };
+export type AdminUser = { id?: string; name: string; email: string; role: string; status: string };
+export type AdminRole = { id?: string; role: string; desc: string; users: number; perms: string[] };
 export type AuditEntry = { who: string; action: string; time: string };
 export type Integration = { name: string; status: string };
 export type Announcement = { id: string; title: string; body: string; date?: string };

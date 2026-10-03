@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAppDispatch, useNavigate } from "@/context/AppContext";
+import { loadAppUser } from "@/lib/supabase/account";
+import { createClient } from "@/lib/supabase/client";
+import { isSimulationMode } from "@/lib/supabase/mode";
 
 type Account = { email: string; pass: string; name: string; role: string; modules: "all" | string[]; type: "admin" | "customer" };
 
@@ -31,19 +34,40 @@ export function Landing() {
     setError("");
   };
 
-  const submitLogin = (event: React.FormEvent<HTMLFormElement>, admin: boolean) => {
+  const submitLogin = async (event: React.FormEvent<HTMLFormElement>, admin: boolean) => {
     event.preventDefault();
     if (admin) { setError("Use the staff sign-in page for admin access."); return; }
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") || "").trim().toLowerCase();
     const password = String(form.get("password") || "");
     const consent = form.get("consent");
+    if (!consent) { setError("Confirm the sign-in checkbox to continue."); return; }
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+        if (authError || !data.user) { setError("Incorrect email or password."); return; }
+        const account = await loadAppUser(supabase, data.user.id, data.user.email || email);
+        if (!account || account.type !== "customer") {
+          await supabase.auth.signOut();
+          setError("This account does not have active customer access.");
+          return;
+        }
+        dispatch({ type: "SET_CURRENT_USER", user: account });
+        setError("");
+        setAuthMode(null);
+        router.push("/customer");
+      } catch (authError) {
+        setError(authError instanceof Error ? authError.message : "Could not sign in. Please try again.");
+      }
+      return;
+    }
     const account = readAccounts().find((candidate) => candidate.email === email && candidate.pass === password && candidate.type === "customer");
-    if (!consent || !account) { setError("Incorrect email or password."); return; }
+    if (!account) { setError("Incorrect email or password."); return; }
     startVerification(account, false);
   };
 
-  const submitSignup = (event: React.FormEvent<HTMLFormElement>) => {
+  const submitSignup = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const name = String(form.get("name") || "").trim();
@@ -52,7 +76,36 @@ export function Landing() {
     const password = String(form.get("password") || "");
     const confirmation = String(form.get("confirmation") || "");
     if (!name || !email || !phone || !password || password !== confirmation || !form.get("consent")) { setError(password !== confirmation ? "Passwords do not match." : "Complete all required fields and agree to the terms."); return; }
-    if (readAccounts().some((account) => account.email === email)) { setError("An account already exists for that email."); return; }
+    if (isSimulationMode() && readAccounts().some((account) => account.email === email)) { setError("An account already exists for that email."); return; }
+    if (!isSimulationMode()) {
+      try {
+        const supabase = createClient();
+        const { data, error: authError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { data: { full_name: name, phone, account_type: "customer" } },
+        });
+        if (authError) { setError(authError.message); return; }
+        if (data.session && data.user) {
+          const account = await loadAppUser(supabase, data.user.id, data.user.email || email);
+          if (!account || account.type !== "customer") {
+            await supabase.auth.signOut();
+            setError("Your account was created, but customer access could not be initialized. Contact support.");
+            return;
+          }
+          dispatch({ type: "SET_CURRENT_USER", user: account });
+          setAuthMode(null);
+          router.push("/customer");
+          return;
+        }
+        setNotice("Account created. Check your email to confirm it, then sign in.");
+        setAuthMode("login");
+        setError("");
+      } catch (authError) {
+        setError(authError instanceof Error ? authError.message : "Could not create your account. Please try again.");
+      }
+      return;
+    }
     const account: Account = { email, pass: password, name, role: "Customer", modules: [], type: "customer" };
     localStorage.setItem("jaad_mock_accounts", JSON.stringify([...readAccounts().filter((candidate) => !defaultAccounts.some((defaultAccount) => defaultAccount.email === candidate.email)), account]));
     startVerification(account, true);
@@ -202,6 +255,7 @@ export function Landing() {
                 <span>I agree to the Terms of Service and Privacy Policy.</span>
               </label>
               {error && <div className="login-error" style={{ display: "block" }}>{error}</div>}
+              {notice && <div className="modal-note">{notice}</div>}
               <button className="btn btn-red auth-submit" type="submit">Create account</button>
               <div className="auth-footer-switch">Already have an account? <button type="button" onClick={() => { setAuthMode("login"); setError(""); }}>Sign in</button></div>
             </form>
@@ -234,7 +288,7 @@ export function Landing() {
                   {authMode === "admin" ? "Use customer login" : "Create account"}
                 </button>
               </div>
-              <div className="modal-note">{authMode === "admin" ? "Use your admin credentials to continue." : "Secure sign in for ordering, tracking, and support updates."}</div>
+              <div className="modal-note">{notice || (authMode === "admin" ? "Use your admin credentials to continue." : "Secure sign in for ordering, tracking, and support updates.")}</div>
             </form>
           )}
         </div>
