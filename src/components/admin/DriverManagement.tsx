@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { AdminTable } from "@/components/admin/AdminTable";
 import { dashboardDB } from "@/lib/dashboard";
+import { isSimulationMode } from "@/lib/supabase/mode";
+import { persistSimulationState } from "@/lib/simulation-store";
 
 const driverTabs = [
   ["profiles", "Profiles"],
@@ -68,23 +70,61 @@ function starRow(name: string, rating: number, onRate: (name: string, value: num
 export function DriverManagement() {
   const [activeTab, setActiveTab] = useState<(typeof driverTabs)[number][0]>("profiles");
   const [drivers, setDrivers] = useState(dashboardDB.drivers);
+  const [addDriverOpen, setAddDriverOpen] = useState(false);
   const [toast, setToast] = useState("");
 
   const updateDriverStatus = (name: string, status: string) => {
+    if (!isSimulationMode()) {
+      setToast("Driver status writes are not connected to the live backend yet.");
+      return;
+    }
     const driver = drivers.find((item) => item.name === name);
     if (!driver) return;
     driver.status = status;
+    persistSimulationState(dashboardDB);
     setDrivers([...drivers]);
     setToast(`${name} set to ${status}`);
     window.setTimeout(() => setToast(""), 2600);
   };
 
   const setDriverRating = (name: string, rating: number) => {
+    if (!isSimulationMode()) {
+      setToast("Driver ratings are not connected to the live backend yet.");
+      return;
+    }
     const driver = drivers.find((item) => item.name === name);
     if (!driver) return;
     driver.rating = rating;
+    persistSimulationState(dashboardDB);
     setDrivers([...drivers]);
     setToast(`${name} rated ${rating} stars`);
+    window.setTimeout(() => setToast(""), 2600);
+  };
+
+  const createDriver = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isSimulationMode()) {
+      setToast("Driver creation is available in simulation mode only.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("name") || "").trim();
+    if (!name || dashboardDB.drivers.some((driver) => driver.name.toLowerCase() === name.toLowerCase())) {
+      setToast(name ? "A driver with that name already exists." : "Driver name is required.");
+      return;
+    }
+    dashboardDB.drivers.push({
+      name,
+      license: String(form.get("license") || ""),
+      expiry: String(form.get("expiry") || ""),
+      trips: 0,
+      rating: 0,
+      status: String(form.get("status") || "Available"),
+    });
+    persistSimulationState(dashboardDB);
+    setDrivers([...dashboardDB.drivers]);
+    setAddDriverOpen(false);
+    setToast(`Simulation: driver ${name} added`);
     window.setTimeout(() => setToast(""), 2600);
   };
 
@@ -95,7 +135,7 @@ export function DriverManagement() {
           <h1>Driver Management</h1>
           <p>Profiles, licences and performance.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setToast("Add driver form is a stub in this prototype")}>＋ Add driver</button>
+        <button className="btn btn-primary" onClick={() => setAddDriverOpen(true)}>＋ Add driver</button>
       </div>
 
       <div className="tabs">
@@ -127,6 +167,8 @@ export function DriverManagement() {
           />
         </>
       )}
+
+      {addDriverOpen && <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setAddDriverOpen(false); }}><form className="modal" onSubmit={createDriver}><div className="modal-head"><h3>Add driver</h3><button className="x-btn" type="button" onClick={() => setAddDriverOpen(false)}>×</button></div><div className="modal-body"><div className="field"><label>Full name</label><input name="name" required /></div><div className="field"><label>Licence number</label><input name="license" required /></div><div className="field-row"><div className="field"><label>Licence expiry</label><input name="expiry" type="date" required /></div><div className="field"><label>Status</label><select name="status" defaultValue="Available">{driverStatusOptions.map((status) => <option key={status}>{status}</option>)}</select></div></div></div><div className="modal-foot"><button className="btn" type="button" onClick={() => setAddDriverOpen(false)}>Cancel</button><button className="btn btn-primary" type="submit">Add driver</button></div></form></div>}
 
       {toast && <div className="toast-wrap"><div className="toast">{toast}</div></div>}
     </>

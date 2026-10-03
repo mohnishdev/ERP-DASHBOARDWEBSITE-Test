@@ -145,7 +145,7 @@ export type Quotation = {
   items: { desc: string; qty: number; rate: number }[];
 };
 
-type FleetVehicle = {
+export type FleetVehicle = {
   plate: string;
   type: string;
   status: string;
@@ -154,13 +154,31 @@ type FleetVehicle = {
   fuelL: number;
   insurer: string;
 };
-type Driver = {
+export type Driver = {
   name: string;
   license: string;
   expiry: string;
   trips: number;
   rating: number;
   status: string;
+};
+export type FleetMaintenanceRecord = {
+  id: string;
+  plate: string;
+  description: string;
+  cost: number;
+  date: string;
+  status: "Scheduled" | "In progress" | "Complete";
+};
+export type FleetInsurancePolicy = {
+  id: string;
+  plate: string;
+  insurer: string;
+  policyNumber: string;
+  coverage: string;
+  premium: number;
+  startDate: string;
+  expiryDate: string;
 };
 type InventoryItem = {
   sku: string;
@@ -301,6 +319,13 @@ export const dashboardDB = {
     { plate: "ENU-902-QP", type: "10-ton box truck", status: "Out of service", driver: "Unassigned", service: "2026-08-20", fuelL: 900, insurer: "Leadway Assurance" },
     { plate: "PHC-055-RT", type: "Low-bed trailer", status: "Idle", driver: "Tunde Fashola", service: "2026-09-30", fuelL: 3100, insurer: "AXA Mansard" },
   ] as FleetVehicle[],
+  fleetMaintenance: [
+    { id: "maintenance-demo-1", plate: "KJA-441-XL", description: "Brake service", cost: 210000, date: "2026-08-04", status: "Scheduled" },
+  ] as FleetMaintenanceRecord[],
+  fleetInsurance: [
+    { id: "insurance-demo-1", plate: "ABJ-220-KT", insurer: "AXA Mansard", policyNumber: "JAAD-ABJ-2026-01", coverage: "Comprehensive", premium: 0, startDate: "2026-01-01", expiryDate: "2026-12-31" },
+    { id: "insurance-demo-2", plate: "KJA-441-XL", insurer: "AXA Mansard", policyNumber: "JAAD-KJA-2026-01", coverage: "Comprehensive", premium: 0, startDate: "2026-01-01", expiryDate: "2026-12-31" },
+  ] as FleetInsurancePolicy[],
   drivers: [
     { name: "Musa Bello", license: "FCT-DL-88214", expiry: "2027-03-01", trips: 142, rating: 4.8, status: "Available" },
     { name: "Chidi Okafor", license: "LAG-DL-55021", expiry: "2026-11-12", trips: 98, rating: 4.6, status: "On trip" },
